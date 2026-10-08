@@ -16,6 +16,7 @@ Minimal and Creator.
 
 ## Table of Contents
 
+- [Showcase](#showcase)
 - [Run](#run)
 - [Modes](#modes)
 - [Auto review](#auto-review)
@@ -24,6 +25,23 @@ Minimal and Creator.
 - [Themes](#themes)
 - [Test](#test)
 - [Dev Note](#dev-note)
+
+## Showcase
+
+[![dsh-tui promo (click for the 70-second video)](docs/promo.gif)](docs/promo.mp4)
+
+A 70-second tour, recorded from real sessions with the built-in scripted demo
+model (`--demo`): `@` file mentions, tool cards with diffs, the four agent
+modes, a PTC program running its tool calls in parallel, mouse selection and
+scrolling, plan mode with questions and plan review, a dark-to-light theme
+flip, slash commands and the provider picker.
+
+- Video: [docs/promo.mp4](docs/promo.mp4) (1920x1080, 30 fps, h264 + AAC)
+- GIF (modes and PTC, 15 s): [docs/promo.gif](docs/promo.gif)
+- Poster: [docs/poster.png](docs/poster.png)
+
+This TUI is an independent, community-built experiment on top of DeepSeek
+Harness, not an official DeepSeek product.
 
 ## Run
 

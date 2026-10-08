@@ -8,6 +8,19 @@ It is built on an **everything-is-a-plugin** architecture and powered by [Cordis
 
 Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://deepseek-harness.github.io/deepseek-harness/)
 
+## Showcase: `dsh-tui`
+
+[![dsh-tui: a terminal UI for DeepSeek Harness (click for the 70-second video)](packages/experimental/tui/docs/promo.gif)](packages/experimental/tui/docs/promo.mp4)
+
+[`dsh-tui`](packages/experimental/tui/README.md) is an experimental, community-built terminal UI for DeepSeek Harness in the style of Claude Code. It runs on the real harness and offers the Web surface's four agent modes (Standard, PTC, Minimal, Creator). In PTC mode the model writes one program, its tool calls run in parallel inside it, and only the result comes back. It also has fullscreen mouse support, light and dark themes, plan review and an opt-in Auto review. Try it without an API key:
+
+```sh
+pnpm install
+packages/experimental/tui/bin/dsh-tui --demo
+```
+
+[Watch the video](packages/experimental/tui/docs/promo.mp4) (70 s, 1080p) · footage recorded with the built-in scripted demo model · not an official DeepSeek product.
+
 ## Developer preview
 
 DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
