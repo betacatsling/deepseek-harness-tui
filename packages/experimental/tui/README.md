@@ -116,5 +116,6 @@ npx tsx scripts/run-oxlint.ts packages/experimental/tui
 
 - From a source checkout, `bin/dsh-tui` runs `src/` directly (tsx resolves the package through the `tsconfig.base.json` alias), so the `.tsx` files carry an `@jsxRuntime automatic` pragma. `npx tsc -b && node scripts/bundle.mjs` builds `lib/` for packaging.
 - Mouse code lives in `src/mouse/` (protocol filter, scroll normaliser, selection, clipboard, controller); the fullscreen layout is `src/ui/fullscreen.tsx` and the transcript line map is `src/viewport.ts`. Terminal modes are restored by `src/mouse/terminal.ts` on every exit path.
+- Both screen modes render with Ink's incremental renderer (`src/render-options.ts`), so a keystroke repaints only the prompt line. `tests/render-options.spec.ts` guards this: without it, inline mode erased and redrew the whole live region on every keystroke, which flickers on terminals without synchronized output such as macOS Terminal.app.
 - Colour tables are built with `themed()` from `src/theme.ts` so that `/theme` can rebuild them; add new colours as palette roles, not literal hex values.
 - The mouse design follows OpenAI Codex and xAI Grok Build (both Apache-2.0); see [NOTICE](NOTICE).

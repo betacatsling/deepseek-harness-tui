@@ -29,6 +29,7 @@ import { ansi, palette, setColorLevel, setTheme } from './theme.ts'
 import { App } from './ui/app.tsx'
 import { FullscreenApp } from './ui/fullscreen.tsx'
 import { buildTranscript } from './viewport.ts'
+import { FULLSCREEN_RENDER_OPTIONS, INLINE_RENDER_OPTIONS } from './render-options.ts'
 export { initialState } from './store.ts'
 
 export { DEMO_MODEL, DEMO_PROVIDER, DemoLlmAdapter } from './demo/adapter.ts'
@@ -178,16 +179,12 @@ export function apply(ctx: Context): void {
       if (screen.note !== undefined) bridge.toast(screen.note, 'info')
     }
     const fullscreenOptions = stdin === undefined ? undefined : {
-      exitOnCtrlC: false,
-      patchConsole: false,
-      maxFps: 60,
-      alternateScreen: true,
-      incrementalRendering: true,
+      ...FULLSCREEN_RENDER_OPTIONS,
       stdin: stdin as unknown as NodeJS.ReadStream,
     }
     const instance = mouse !== undefined && fullscreenOptions !== undefined
       ? render(createElement(FullscreenApp, { bridge, files, mouse }), fullscreenOptions)
-      : render(createElement(App, { bridge, files }), { exitOnCtrlC: false, patchConsole: false, maxFps: 30 })
+      : render(createElement(App, { bridge, files }), INLINE_RENDER_OPTIONS)
     void files.ensure()
     bridge.start().catch((error: unknown) => {
       store.update((draft) => {
