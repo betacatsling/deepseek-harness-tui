@@ -125,3 +125,72 @@ function nextBoundary(text: string, index: number): number {
   if (code >= 0xD800 && code <= 0xDBFF && index + 1 < text.length) return index + 2
   return index + 1
 }
+
+/** One wrapped display row of the editor: `[start, end)` into the text. */
+export interface VisualRow {
+  readonly start: number
+  readonly end: number
+}
+
+/**
+ * Word-wrap `text` into display rows of at most `width` cells. Explicit
+ * newlines always break; long words hard-break. Rendering and click-to-cursor
+ * share this layout so a click lands exactly where the character is drawn.
+ */
+export function layoutRows(text: string, width: number, measure: (s: string) => number): VisualRow[] {
+  const w = Math.max(1, width)
+  const rows: VisualRow[] = []
+  let lineStart = 0
+  for (const line of text.split('\n')) {
+    const lineEnd = lineStart + line.length
+    if (line === '') rows.push({ start: lineStart, end: lineStart })
+    let pos = lineStart
+    while (pos < lineEnd) {
+      let used = 0
+      let cut = pos
+      let lastBreak = -1
+      for (const ch of text.slice(pos, lineEnd)) {
+        const cw = measure(ch)
+        if (used + cw > w) break
+        used += cw
+        cut += ch.length
+        if (ch === ' ') lastBreak = cut
+      }
+      if (cut >= lineEnd) {
+        rows.push({ start: pos, end: lineEnd })
+        break
+      }
+      const end = lastBreak > pos ? lastBreak : Math.max(cut, pos + 1)
+      rows.push({ start: pos, end })
+      pos = end
+    }
+    lineStart = lineEnd + 1
+  }
+  return rows
+}
+
+/**
+ * The text index under a display cell, for click-to-place-cursor.
+ * @param rows - layout from {@link layoutRows}.
+ * @param row - display row (clamped).
+ * @param col - display column within the row.
+ */
+export function indexAt(text: string, rows: readonly VisualRow[], row: number, col: number, measure: (s: string) => number): number {
+  const target = rows[Math.max(0, Math.min(rows.length - 1, row))]
+  if (target === undefined) return 0
+  let used = 0
+  let index = target.start
+  for (const ch of text.slice(target.start, target.end)) {
+    const cw = measure(ch)
+    if (used + cw / 2 > col) return index
+    used += cw
+    index += ch.length
+  }
+  // Past the end of a soft-wrapped row, stay on this row: before its last char.
+  const softWrapped = target.end > target.start && target.end < text.length && text[target.end] !== '\n'
+  if (softWrapped) {
+    const last = Array.from(text.slice(target.start, target.end)).at(-1) ?? ''
+    return target.end - last.length
+  }
+  return index
+}

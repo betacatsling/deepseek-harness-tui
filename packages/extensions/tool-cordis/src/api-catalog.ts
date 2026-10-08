@@ -3336,6 +3336,53 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'tuiStartup',
+    summary: 'Values the TUI row reads from TUI_STARTUP_SERVICE.',
+    description: 'Values the TUI row reads from TUI_STARTUP_SERVICE.',
+    methods: [
+      {
+        signature: 'demo: boolean',
+        description: 'Force the scripted demo model even when a real key is configured.',
+        parameters: [],
+      },
+      {
+        signature: 'resume: string | undefined',
+        description: 'Exact session to resume at startup.',
+        parameters: [],
+      },
+      {
+        signature: 'continue: boolean',
+        description: 'Resume the most recent session recorded for this working directory.',
+        parameters: [],
+      },
+      {
+        signature: 'model: string | undefined',
+        description: 'Override the starting model as `provider/model` or a bare model id.',
+        parameters: [],
+      },
+      {
+        signature: 'permission: string | undefined',
+        description: 'Starting permission preset.',
+        parameters: [],
+      },
+      {
+        signature: 'prompt: string | undefined',
+        description: 'Optional first prompt submitted right after the banner.',
+        parameters: [],
+      },
+      {
+        signature: 'mouse: boolean | undefined',
+        description: 'Fullscreen with mouse support (true), classic inline (false), or auto (undefined).',
+        parameters: [],
+      },
+      {
+        signature: 'theme: string | undefined',
+        description: '`--theme` value (auto, dark, light) when given.',
+        parameters: [],
+      },
+    ],
+  },
+  {
     key: 'typert',
     summary: 'Registry of generated schemas, package reflection, invocations, and Remote dependency providers.',
     description: 'Registry of generated schemas, package reflection, invocations, and Remote dependency providers.',

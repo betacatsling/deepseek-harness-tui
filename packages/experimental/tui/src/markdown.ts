@@ -9,9 +9,9 @@ import { marked, type Token, type Tokens } from 'marked'
 import stringWidth from './width.ts'
 import wrapAnsi from 'wrap-ansi'
 import { highlightCode } from './highlight.ts'
-import { ansi, palette } from './theme.ts'
+import { ansi, palette, themed } from './theme.ts'
 
-const c = {
+const c = themed(() => ({
   text: ansi.hex(palette.text),
   muted: ansi.hex(palette.muted),
   faint: ansi.hex(palette.faint),
@@ -21,7 +21,7 @@ const c = {
   link: ansi.hex(palette.accent).underline,
   quote: ansi.hex(palette.muted).italic,
   border: ansi.hex(palette.border),
-}
+}))
 
 function decodeEntities(text: string): string {
   return text

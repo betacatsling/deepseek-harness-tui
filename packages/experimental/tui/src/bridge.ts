@@ -8,6 +8,9 @@
  * @module @deepseek-ai/dsh-experimental-tui/bridge
  */
 
+import { writeSettings } from './settings.ts'
+import type { ThemeChoice } from './terminal-theme.ts'
+import { setTheme, type ThemeName, type ThemeSetting } from './theme.ts'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -58,9 +61,23 @@ export interface BridgeOptions {
   readonly prompt: string | undefined
   readonly logs: LogCapture
   readonly requestExit: (code: number) => void
+  /** Startup theme resolution (see terminal-theme.ts). */
+  readonly theme?: ThemeChoice
 }
 
 /** A completion entry for the slash menu. */
+/** Fullscreen-mode hooks (see ui/fullscreen.tsx). */
+export interface ScreenHooks {
+  /** Force a full redraw of the alternate screen. */
+  repaint(): void
+  /** Forget scroll position, expansions and selection (after /clear). */
+  reset(): void
+  /** Mouse reporting on/off; returns the new state. */
+  setMouse(on: boolean | undefined): boolean
+  /** Copy the current transcript selection, if any. */
+  copySelection(): boolean
+}
+
 export interface SlashEntry {
   readonly name: string
   readonly description: string
@@ -118,13 +135,26 @@ export class Bridge {
   private reasoningMs: number | undefined
   private readonly disposers: (() => void)[] = []
   readonly history: string[] = []
+  /** Installed by the fullscreen UI; undefined in inline mode. */
+  screen: ScreenHooks | undefined
+  /** Ctrl+Z job control, installed by whichever root is mounted. */
+  suspend: (() => Promise<void>) | undefined
+  private themeChoice: ThemeChoice
   private historyFile: string
   readonly cwd: string
 
   constructor(private readonly ctx: Context, readonly store: Store, private readonly options: BridgeOptions) {
+    this.themeChoice = options.theme ?? { setting: 'auto', theme: 'dark', source: 'default', detected: 'dark', detectedFrom: 'default' }
     this.cwd = process.cwd()
     this.historyFile = join(dshHome(), 'tui-history.jsonl')
     this.loadHistory()
+    // React's dev profiler logs component props by walking them a few levels
+    // deep and reading `$$typeof` on every value; Cordis contexts throw on
+    // unknown properties. The bridge is passed as a prop, so keep everything
+    // but the plain store out of enumeration.
+    for (const key of Object.keys(this)) {
+      if (key !== 'store') Object.defineProperty(this, key, { enumerable: false })
+    }
   }
 
   // ---------------------------------------------------------------- lifecycle
@@ -779,11 +809,43 @@ export class Bridge {
     this.options.requestExit(0)
   }
 
+  /** The theme setting in force and what auto-detection found. */
+  themeInfo(): { setting: ThemeSetting; theme: ThemeName; source: string; detected: ThemeName; detectedFrom: string } {
+    const choice = this.themeChoice
+    return { ...choice, theme: this.store.get().theme }
+  }
+
+  /**
+   * Switch theme now and persist the choice in `tui.json`.
+   * @param setting - auto uses the background detected at startup.
+   * @returns the concrete theme applied.
+   */
+  applyTheme(setting: ThemeSetting): ThemeName {
+    const detected = this.themeChoice.detected
+    const theme = setting === 'auto' ? detected : setting
+    this.themeChoice = { ...this.themeChoice, setting, theme, source: setting === 'auto' ? this.themeChoice.detectedFrom : 'config' }
+    try {
+      writeSettings(dshHome(), { theme: setting })
+    } catch (error: unknown) {
+      this.toast(`Could not save theme: ${error instanceof Error ? error.message : String(error)}`, 'warn')
+    }
+    setTheme(theme)
+    this.store.update((draft) => { draft.theme = theme })
+    this.reprint(true)
+    return theme
+  }
+
   /** Clear the screen and reprint the banner plus the given items. */
   reprint(keepItems: boolean): void {
-    // Clear synchronously, in the same tick as the state change, so no React
-    // commit of the new epoch can land before the clear and be wiped by it.
-    if (process.stdout.isTTY) process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+    if (this.screen !== undefined) {
+      // Fullscreen owns the alternate screen: redraw through Ink, never clear behind its back.
+      if (!keepItems) this.screen.reset()
+      this.screen.repaint()
+    } else if (process.stdout.isTTY) {
+      // Clear synchronously, in the same tick as the state change, so no React
+      // commit of the new epoch can land before the clear and be wiped by it.
+      process.stdout.write('\x1b[2J\x1b[3J\x1b[H')
+    }
     this.store.update((draft) => {
       if (!keepItems) draft.items = [{ kind: 'banner', id: this.store.nextId('b') }]
       draft.flushed = 0

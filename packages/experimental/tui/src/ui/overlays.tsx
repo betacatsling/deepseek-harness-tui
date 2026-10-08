@@ -1,3 +1,4 @@
+/** @jsxRuntime automatic */
 /**
  * Modal prompts that replace the composer: tool approval, user questions
  * (including plan review), and the generic picker used by /model, /resume,
@@ -9,12 +10,14 @@ import { Box, Text, useInput } from 'ink'
 import { useState } from 'react'
 import stringWidth from '../width.ts'
 import { renderMarkdown } from '../markdown.ts'
+import type { MouseController } from '../mouse/controller.ts'
 import { clipText, pad, renderDiff, wrap } from '../render.ts'
 import type { Overlay, QuestionAnswer } from '../store.ts'
-import { ansi, glyph, palette } from '../theme.ts'
+import { ansi, glyph, palette, themed } from '../theme.ts'
 import { editPair, filePath, lineDiff, toolVerb } from '../tool-format.ts'
+import { selectionKey } from './composer.tsx'
 
-const c = {
+const c = themed(() => ({
   text: ansi.hex(palette.text),
   bold: ansi.hex(palette.text).bold,
   muted: ansi.hex(palette.muted),
@@ -25,7 +28,7 @@ const c = {
   plan: ansi.hex(palette.plan),
   success: ansi.hex(palette.success),
   border: ansi.hex(palette.border),
-}
+}))
 
 function frame(lines: readonly string[], width: number, color: (s: string) => string): string {
   const inner = width - 4
@@ -36,10 +39,55 @@ function frame(lines: readonly string[], width: number, color: (s: string) => st
   ].join('\n')
 }
 
-function option(index: number, active: boolean, label: string, extra = ''): string {
-  const pointer = active ? c.accent(`${glyph.pointer} `) : '  '
+function option(index: number, active: boolean, label: string, extra = '', hovered = false): string {
+  const pointer = active ? c.accent(`${glyph.pointer} `) : hovered ? c.faint(`${glyph.pointer} `) : '  '
   const number = `${String(index + 1)}. `
-  return pointer + (active ? c.accent(number + label) : c.text(number) + c.text(label)) + extra
+  if (active) return pointer + c.accent(number + label) + extra
+  if (hovered) return pointer + c.text(number) + ansi.underline(c.text(label)) + extra
+  return pointer + c.text(number) + c.text(label) + extra
+}
+
+/** A clickable line of a modal prompt. */
+type Target =
+  | { readonly kind: 'option'; readonly index: number }
+  | { readonly kind: 'tabs'; readonly spans: readonly { readonly from: number; readonly to: number; readonly tab: number }[] }
+
+interface OverlayMouse {
+  click(target: Target, col: number): void
+  wheel?(direction: 1 | -1): void
+}
+
+/**
+ * Register a modal's click targets with the fullscreen mouse router.
+ * `targets` is parallel to the framed body lines; row 0 is the top border.
+ */
+function registerOverlay(
+  mouse: MouseController | undefined,
+  targets: readonly (Target | undefined)[],
+  hover: number | undefined,
+  setHover: (index: number | undefined) => void,
+  handlers: OverlayMouse,
+): void {
+  if (mouse === undefined) return
+  mouse.registerBottom({
+    height: targets.length + 3,
+    onMouse(event, row, col) {
+      const target = row >= 1 ? targets[row - 1] : undefined
+      const index = target?.kind === 'option' ? target.index : undefined
+      if (event.kind === 'move' || event.kind === 'drag') {
+        if (index !== hover) setHover(index)
+        return target !== undefined
+      }
+      if (event.kind === 'wheel') {
+        if (handlers.wheel === undefined) return false
+        handlers.wheel(event.direction === 'up' ? -1 : 1)
+        return true
+      }
+      if (event.kind !== 'down' || event.button !== 'left' || target === undefined) return false
+      handlers.click(target, col - 2)
+      return true
+    },
+  })
 }
 
 function footer(text: string): string {
@@ -57,8 +105,9 @@ const APPROVAL_TITLES: Record<string, string> = {
   web_fetch: 'Fetch',
 }
 
-function ApprovalPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 'approval' }>; width: number }): React.JSX.Element {
+function ApprovalPrompt({ overlay, width, mouse }: { overlay: Extract<Overlay, { kind: 'approval' }>; width: number; mouse?: MouseController }): React.JSX.Element {
   const [index, setIndex] = useState(0)
+  const [hover, setHover] = useState<number | undefined>(undefined)
   const verb = toolVerb(overlay.toolName)
   const choices = [
     'Yes',
@@ -69,6 +118,7 @@ function ApprovalPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
     overlay.resolve(i === 0 ? 'once' : i === 1 ? 'always' : 'reject')
   }
   useInput((input, key) => {
+    if (selectionKey(mouse, input, key)) return
     if (key.upArrow) setIndex((index + choices.length - 1) % choices.length)
     else if (key.downArrow || key.tab) setIndex((index + 1) % choices.length)
     else if (key.return) choose(index)
@@ -106,7 +156,14 @@ function ApprovalPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
     lines.push('', ...wrap(reason, inner - 4).map(line => `   ${c.faint(line)}`))
   }
   lines.push('', c.text('Do you want to proceed?'))
-  choices.forEach((label, i) => { lines.push(option(i, i === index, label)) })
+  const targets: (Target | undefined)[] = lines.map(() => undefined)
+  choices.forEach((label, i) => {
+    lines.push(option(i, i === index, label, '', i === hover))
+    targets.push({ kind: 'option', index: i })
+  })
+  registerOverlay(mouse, targets, hover, setHover, {
+    click: (target) => { if (target.kind === 'option') choose(target.index) },
+  })
   return (
     <Box flexDirection="column">
       <Text>{frame(lines, width, c.warning)}</Text>
@@ -117,8 +174,9 @@ function ApprovalPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
 
 // ---------------------------------------------------------------- questions
 
-function QuestionPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 'question' }>; width: number }): React.JSX.Element {
+function QuestionPrompt({ overlay, width, mouse }: { overlay: Extract<Overlay, { kind: 'question' }>; width: number; mouse?: MouseController }): React.JSX.Element {
   const questions = overlay.questions
+  const [hover, setHover] = useState<number | undefined>(undefined)
   const [tab, setTab] = useState(0)
   const [cursor, setCursor] = useState(0)
   const [answers, setAnswers] = useState<Record<string, { selected: string[]; custom?: string }>>({})
@@ -146,8 +204,32 @@ function QuestionPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
     else setTab(tab + 1)
   }
 
+  /** A click on option `target`: the same as pressing its number key. */
+  const clickOption = (target: number): void => {
+    if (question === undefined) return
+    if (onSubmitTab) {
+      finish(answers)
+      return
+    }
+    setCursor(target)
+    if (target === optionCount - 1) {
+      setTyping(answers[question.id]?.custom ?? '')
+      return
+    }
+    setTyping(undefined)
+    const label = question.options[target]?.label ?? ''
+    if (question.multiSelect) {
+      const current = answers[question.id]?.selected ?? []
+      const selected = current.includes(label) ? current.filter(l => l !== label) : [...current, label]
+      setAnswers({ ...answers, [question.id]: { selected } })
+      return
+    }
+    advance({ ...answers, [question.id]: { selected: [label] } })
+  }
+
   useInput((input, key) => {
     if (question === undefined) return
+    if (selectionKey(mouse, input, key)) return
     if (onSubmitTab) {
       if (key.return) finish(answers)
       else if (key.leftArrow || (key.tab && key.shift)) setTab(tab - 1)
@@ -204,14 +286,25 @@ function QuestionPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
 
   const inner = width - 4
   const lines: string[] = []
+  const targets: (Target | undefined)[] = []
+  const mark = (target?: Target): void => { while (targets.length < lines.length) targets.push(target) }
   if (multiple) {
-    const tabs = questions.map((q, i) => {
+    const labels = [...questions.map((q, i) => {
       const done = (answers[q.id]?.selected.length ?? 0) > 0 || answers[q.id]?.custom !== undefined
-      const label = `${done ? glyph.todoDone : glyph.todoOpen} ${q.header ?? `Q${String(i + 1)}`}`
-      return i === tab ? ansi.bgHex(palette.accentDim).hex('#FFFFFF')(` ${label} `) : c.muted(` ${label} `)
+      return `${done ? glyph.todoDone : glyph.todoOpen} ${q.header ?? `Q${String(i + 1)}`}`
+    }), `${glyph.check} Submit`]
+    const spans: { from: number; to: number; tab: number }[] = [{ from: 0, to: 2, tab: Math.max(0, tab - 1) }]
+    let col = 2
+    const tabs = labels.map((label, i) => {
+      const w = stringWidth(label) + 2
+      spans.push({ from: col, to: col + w, tab: i })
+      col += w + 1
+      return i === tab ? ansi.bgHex(palette.accentDim).hex(palette.onAccent)(` ${label} `) : c.muted(` ${label} `)
     })
-    tabs.push(onSubmitTab ? ansi.bgHex(palette.accentDim).hex('#FFFFFF')(` ${glyph.check} Submit `) : c.muted(` ${glyph.check} Submit `))
-    lines.push(`${c.faint('←')} ${tabs.join(' ')} ${c.faint('→')}`, '')
+    spans.push({ from: col, to: col + 1, tab: Math.min(questions.length, tab + 1) })
+    lines.push(`${c.faint('←')} ${tabs.join(' ')} ${c.faint('→')}`)
+    mark({ kind: 'tabs', spans })
+    lines.push('')
   }
 
   if (onSubmitTab) {
@@ -221,7 +314,10 @@ function QuestionPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
       const text = [...a?.selected ?? [], ...a?.custom === undefined ? [] : [`“${a.custom}”`]].join(', ')
       lines.push(c.muted(`• ${q.question}`), `  ${c.accent('→')} ${text === '' ? c.faint('(skipped)') : c.text(text)}`)
     }
-    lines.push('', c.text('Ready to submit your answers?'), option(0, true, 'Submit answers'))
+    lines.push('', c.text('Ready to submit your answers?'))
+    mark()
+    lines.push(option(0, true, 'Submit answers'))
+    mark({ kind: 'option', index: 0 })
   } else if (question !== undefined) {
     if (plan) {
       lines.push(c.plan.bold('Here is DeepSeek’s plan:'), '')
@@ -239,20 +335,37 @@ function QuestionPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
       lines.push('')
     }
     const chosen = answers[question.id]?.selected ?? []
+    mark()
     question.options.forEach((opt, i) => {
       const active = i === cursor && typing === undefined
       const box = question.multiSelect ? `${chosen.includes(opt.label) ? c.success('[✔]') : c.faint('[ ]')} ` : ''
       const label = plan && opt.label === question.planReview.approve ? `Yes, approve the plan and start ${c.faint('(leave plan mode)')}` : plan ? `No, keep planning ${c.faint('(stay in plan mode)')}` : opt.label
-      lines.push(option(i, active, box + label))
+      lines.push(option(i, active, box + label, '', i === hover && !active))
       if (opt.description !== undefined && !plan) lines.push(...wrap(opt.description, inner - 7).map(line => `      ${c.faint(line)}`))
+      mark({ kind: 'option', index: i })
     })
     const otherIndex = optionCount - 1
     const otherActive = cursor === otherIndex
     const otherLabel = typing !== undefined && otherActive
       ? c.text(typing) + ansi.inverse(' ')
       : plan ? c.muted('Tell DeepSeek what to change…') : c.muted('Type something else…')
-    lines.push(option(otherIndex, otherActive && typing === undefined, otherLabel))
+    lines.push(option(otherIndex, otherActive && typing === undefined, otherLabel, '', hover === otherIndex && !otherActive))
+    mark({ kind: 'option', index: otherIndex })
   }
+  mark()
+  registerOverlay(mouse, targets, hover, setHover, {
+    click: (target, col) => {
+      if (target.kind === 'option') {
+        clickOption(target.index)
+        return
+      }
+      const span = target.spans.find(s => col >= s.from && col < s.to)
+      if (span === undefined) return
+      setTab(span.tab)
+      setCursor(0)
+      setTyping(undefined)
+    },
+  })
   const hint = typing !== undefined ? 'enter to send · esc to go back'
     : question?.multiSelect === true ? 'space to toggle · enter to confirm · esc to dismiss'
       : multiple ? '↑/↓ choose · enter select · ←/→ switch question · esc to dismiss'
@@ -267,13 +380,15 @@ function QuestionPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 
 
 // ---------------------------------------------------------------- picker
 
-function PickerPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 'picker' }>; width: number }): React.JSX.Element {
+function PickerPrompt({ overlay, width, mouse }: { overlay: Extract<Overlay, { kind: 'picker' }>; width: number; mouse?: MouseController }): React.JSX.Element {
+  const [hover, setHover] = useState<number | undefined>(undefined)
   const initial = Math.max(0, overlay.options.findIndex(opt => opt.current === true))
   const [index, setIndex] = useState(initial)
   const [filter, setFilter] = useState('')
   const options = overlay.options.filter(opt => filter === '' || `${opt.label} ${opt.description ?? ''}`.toLowerCase().includes(filter.toLowerCase()))
   const selected = Math.min(index, Math.max(0, options.length - 1))
   useInput((input, key) => {
+    if (selectionKey(mouse, input, key)) return
     if (key.escape) { overlay.resolve(undefined); return }
     if (key.upArrow) { setIndex((selected + options.length - 1) % Math.max(1, options.length)); return }
     if (key.downArrow || key.tab) { setIndex((selected + 1) % Math.max(1, options.length)); return }
@@ -297,18 +412,35 @@ function PickerPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 'p
   const lines: string[] = [c.bold(overlay.title)]
   if (overlay.hint !== undefined) lines.push(...wrap(overlay.hint, inner).map(line => c.faint(line)))
   lines.push(filter === '' ? '' : `${c.faint('filter:')} ${c.text(filter)}${ansi.inverse(' ')}`)
+  const targets: (Target | undefined)[] = lines.map(() => undefined)
   visible.forEach((opt, offset) => {
     const i = start + offset
     const active = i === selected
+    const hovered = i === hover && !active
+    targets.push({ kind: 'option', index: i })
     const mark = opt.current === true ? c.success(` ${glyph.check}`) : ''
     const badge = opt.badge === undefined ? '' : ` ${ansi.bgHex(palette.border).hex(palette.text)(` ${opt.badge} `)}`
     const label = pad(clipText(opt.label, labelWidth - 1), labelWidth)
     const used = 5 + labelWidth + stringWidth(mark) + stringWidth(badge)
     const description = opt.description === undefined ? '' : clipText(opt.description, Math.max(0, inner - used - 1))
-    lines.push(`${active ? c.accent(`${glyph.pointer} `) : '  '}${c.faint(`${String(i + 1).padStart(2)}.`)} ${active ? c.accent(label) : c.text(label)}${active ? c.muted(description) : c.faint(description)}${badge}${mark}`)
+    const pointer = active ? c.accent(`${glyph.pointer} `) : hovered ? c.faint(`${glyph.pointer} `) : '  '
+    const name = active ? c.accent(label) : hovered ? ansi.underline(c.text(label.trimEnd())) + ' '.repeat(label.length - label.trimEnd().length) : c.text(label)
+    lines.push(`${pointer}${c.faint(`${String(i + 1).padStart(2)}.`)} ${name}${active || hovered ? c.muted(description) : c.faint(description)}${badge}${mark}`)
   })
   if (options.length === 0) lines.push(c.faint('  No matches'))
   if (options.length > visible.length) lines.push(c.faint(`  ${String(options.length)} total · ↑/↓ to scroll`))
+  while (targets.length < lines.length) targets.push(undefined)
+  registerOverlay(mouse, targets, hover, setHover, {
+    click: (target) => {
+      if (target.kind !== 'option') return
+      setIndex(target.index)
+      overlay.resolve(options[target.index]?.value)
+    },
+    wheel: (direction) => {
+      if (options.length === 0) return
+      setIndex(Math.max(0, Math.min(options.length - 1, selected + direction)))
+    },
+  })
   return (
     <Box flexDirection="column">
       <Text>{frame(lines, width, c.accent)}</Text>
@@ -318,14 +450,15 @@ function PickerPrompt({ overlay, width }: { overlay: Extract<Overlay, { kind: 'p
 }
 
 /** Render the topmost overlay. */
-export function OverlayView({ overlay, width }: { overlay: Overlay; width: number }): React.JSX.Element {
+export function OverlayView({ overlay, width, mouse }: { overlay: Overlay; width: number; mouse?: MouseController }): React.JSX.Element {
+  const shared = mouse === undefined ? {} : { mouse }
   switch (overlay.kind) {
     case 'approval':
-      return <ApprovalPrompt key={overlay.id} overlay={overlay} width={width} />
+      return <ApprovalPrompt key={overlay.id} overlay={overlay} width={width} {...shared} />
     case 'question':
-      return <QuestionPrompt key={overlay.id} overlay={overlay} width={width} />
+      return <QuestionPrompt key={overlay.id} overlay={overlay} width={width} {...shared} />
     case 'picker':
-      return <PickerPrompt key={overlay.id} overlay={overlay} width={width} />
+      return <PickerPrompt key={overlay.id} overlay={overlay} width={width} {...shared} />
     default:
       return <Text />
   }

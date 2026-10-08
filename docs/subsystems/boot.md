@@ -206,6 +206,14 @@ Current profile facts; scheduling and mutation belong to their callers.
 
 Source: [`packages/boot/app-boot/src/profile-context.ts`](../../packages/boot/app-boot/src/profile-context.ts)
 
+<a id="ctxtuistartup--tuistartupvalues"></a>
+
+### `ctx.tuiStartup` — `TuiStartupValues`
+
+Values the TUI row reads from TUI_STARTUP_SERVICE.
+
+Source: [`packages/experimental/tui/src/startup.ts`](../../packages/experimental/tui/src/startup.ts)
+
 <a id="app-boot-events"></a>
 
 ### `app-boot/*` events

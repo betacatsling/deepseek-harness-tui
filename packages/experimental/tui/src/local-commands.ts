@@ -5,6 +5,7 @@
  * @module @deepseek-ai/dsh-experimental-tui/local-commands
  */
 
+import { copyToClipboard } from './mouse/clipboard.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Bridge } from './bridge.ts'
@@ -47,7 +48,12 @@ const KEYS = [
   ['Ctrl+O', 'toggle detailed transcript (expand thinking and output)'],
   ['Ctrl+T', 'toggle the todo panel'],
   ['Ctrl+L', 'redraw the screen'],
-  ['Ctrl+C', 'clear input · twice to exit'],
+  ['Ctrl+C', 'clear input · twice to exit · copies the mouse selection when there is one'],
+  ['Ctrl+Z', 'suspend to the shell (`fg` to resume)'],
+  ['PgUp / PgDn · Shift+↑/↓', 'scroll the transcript (fullscreen)'],
+  ['Ctrl+Home / Ctrl+End', 'jump to the top / back to the bottom (fullscreen)'],
+  ['Mouse', 'wheel scrolls · drag selects and copies · double/triple-click selects a word/line · click a tool to expand it · click options and menu rows'],
+  ['Shift+drag', 'native terminal selection while the mouse is captured (⌥+drag in iTerm2, fn+drag in Terminal.app) · or `/mouse off`'],
 ] as const
 
 export const LOCAL_COMMANDS: readonly LocalCommand[] = [
@@ -440,15 +446,66 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   },
   {
     name: 'copy',
-    description: 'Copy the last response to the clipboard (OSC 52)',
+    description: 'Copy the mouse selection, or the last response, to the clipboard',
     run(bridge, _input, line) {
+      if (bridge.screen?.copySelection() === true) return
       const last = [...bridge.store.get().items].reverse().find(item => item.kind === 'assistant')
       if (last?.kind !== 'assistant') {
         bridge.commandOutput(line, false, 'Nothing to copy yet.')
         return
       }
-      process.stdout.write(`\x1b]52;c;${Buffer.from(last.text).toString('base64')}\x07`)
-      bridge.commandOutput(line, true, `Copied ${String(last.text.length)} characters`)
+      const routes = copyToClipboard(last.text, data => process.stdout.write(data))
+      bridge.commandOutput(line, routes.length > 0, routes.length > 0
+        ? `Copied ${String(Array.from(last.text).length)} characters (${routes.join(', ')})`
+        : 'No clipboard route available (no OSC 52 support detected and no clipboard tool found).')
+    },
+  },
+  {
+    name: 'theme',
+    description: 'Colour theme: auto (detect the background), dark, or light',
+    hint: '[auto|dark|light]',
+    async run(bridge, input, line) {
+      let arg = input.trim().toLowerCase()
+      const info = bridge.themeInfo()
+      if (arg === '') {
+        const describe = (setting: string): string => setting === 'auto'
+          ? `Follow the terminal background (detected ${info.detected} via ${info.detectedFrom})`
+          : setting === 'dark' ? 'Light text on a dark background' : 'Dark text on a light background'
+        const picked = await bridge.pick('Theme', ['auto', 'dark', 'light'].map(value => ({
+          value,
+          label: value.charAt(0).toUpperCase() + value.slice(1),
+          description: describe(value),
+          ...value === info.setting ? { current: true } : {},
+        })), `Now: ${info.theme} (${info.setting === 'auto' ? `auto · ${info.source}` : 'set by you'}) · saved to tui.json`)
+        if (picked === undefined) return
+        arg = picked
+      }
+      if (arg !== 'auto' && arg !== 'dark' && arg !== 'light') {
+        bridge.commandOutput(line, false, 'Usage: `/theme [auto|dark|light]`', true)
+        return
+      }
+      const theme = bridge.applyTheme(arg)
+      bridge.toast(arg === 'auto' ? `Theme: auto → ${theme}` : `Theme: ${theme}`, 'success')
+    },
+  },
+  {
+    name: 'mouse',
+    description: 'Toggle mouse capture (off = native terminal selection)',
+    hint: '[on|off]',
+    run(bridge, input, line) {
+      const arg = input.trim().toLowerCase()
+      if (bridge.screen === undefined) {
+        bridge.commandOutput(line, false, 'Mouse support needs the fullscreen UI · restart without `--no-mouse` (or unset `DSH_TUI_MOUSE=0`).')
+        return
+      }
+      if (arg !== '' && arg !== 'on' && arg !== 'off' && arg !== 'toggle') {
+        bridge.commandOutput(line, false, 'Usage: `/mouse [on|off]`', true)
+        return
+      }
+      const on = bridge.screen.setMouse(arg === 'on' ? true : arg === 'off' ? false : undefined)
+      bridge.toast(on
+        ? 'Mouse on · wheel scrolls, drag selects, click expands · Shift+drag for native selection'
+        : 'Mouse off · drag to select with your terminal · PgUp/PgDn scroll · /mouse on to restore', on ? 'success' : 'info')
     },
   },
   {

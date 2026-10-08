@@ -5,11 +5,11 @@
  */
 
 import hljs from 'highlight.js/lib/common'
-import { ansi, palette } from './theme.ts'
+import { ansi, palette, themed } from './theme.ts'
 
 type Painter = (text: string) => string
 
-const scopeColor: Record<string, Painter> = {
+const scopeColor: Record<string, Painter> = themed(() => ({
   keyword: ansi.hex(palette.synKeyword),
   built_in: ansi.hex(palette.synType),
   type: ansi.hex(palette.synType),
@@ -43,7 +43,7 @@ const scopeColor: Record<string, Painter> = {
   deletion: ansi.hex(palette.diffDelFg),
   operator: ansi.hex(palette.synMeta),
   punctuation: ansi.hex(palette.muted),
-}
+}))
 
 const ENTITIES: Record<string, string> = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#x27;': "'", '&#39;': "'" }
 

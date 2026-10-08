@@ -13,10 +13,10 @@ import { formatElapsed, tildify } from './format.ts'
 import { highlightCode, languageForPath } from './highlight.ts'
 import { renderMarkdown } from './markdown.ts'
 import type { ChildStep, Item, TodoEntry, UiState } from './store.ts'
-import { ansi, glyph, palette } from './theme.ts'
+import { ansi, glyph, palette, themed, themeName } from './theme.ts'
 import { type DiffLine, editPair, filePath, summarizeResult, toolArgument, toolVerb } from './tool-format.ts'
 
-const c = {
+const c = themed(() => ({
   text: ansi.hex(palette.text),
   bold: ansi.hex(palette.text).bold,
   muted: ansi.hex(palette.muted),
@@ -29,7 +29,7 @@ const c = {
   bash: ansi.hex(palette.synAttr),
   border: ansi.hex(palette.border),
   user: ansi.hex(palette.user),
-}
+}))
 
 /** Render options shared by all items. */
 export interface RenderOptions {
@@ -39,6 +39,13 @@ export interface RenderOptions {
   /** Animation frame for running bullets. */
   readonly frame?: number
   readonly now?: number
+  /** How the "show more" hints read: `ctrl+o` (inline) or `click` (mouse-enabled fullscreen). */
+  readonly hint?: 'keyboard' | 'click'
+}
+
+/** The italic "show more" hint for an option set. */
+export function expandHint(opts?: { readonly hint?: 'keyboard' | 'click' }): string {
+  return opts?.hint === 'click' ? '(click to expand)' : '(ctrl+o to expand)'
 }
 
 /** Hard-wrap ANSI text to `width` columns, preserving explicit newlines. */
@@ -78,8 +85,8 @@ function elbow(lines: readonly string[], width: number, wrapLines = true): strin
   return hang(c.faint(ELBOW), ELBOW_REST, wrapped)
 }
 
-function moreLine(hidden: number, what = 'lines'): string {
-  return c.faint(`… +${String(hidden)} ${what} `) + c.faint.italic('(ctrl+o to expand)')
+function moreLine(hidden: number, opts?: { readonly hint?: 'keyboard' | 'click' }): string {
+  return c.faint(`… +${String(hidden)} lines `) + c.faint.italic(expandHint(opts))
 }
 
 // ---------------------------------------------------------------- banner
@@ -147,7 +154,7 @@ export function renderBanner(state: UiState, width: number): string[] {
 // ---------------------------------------------------------------- items
 
 function renderUser(text: string, width: number, mentions: readonly string[] | undefined, steered: boolean | undefined): string[] {
-  const bg = ansi.bgHex('#1F232C')
+  const bg = ansi.bgHex(palette.userBg)
   const body = wrap(text, width - 4)
   const lines = body.map((line, index) => bg(pad(`${index === 0 ? c.faint(' > ') : '   '}${c.user(line)}`, width - 1)))
   const out = [...lines]
@@ -163,7 +170,7 @@ function renderAssistant(text: string, width: number): string[] {
 
 function renderThinking(text: string, ms: number | undefined, opts: RenderOptions): string[] {
   const label = ms === undefined ? 'Thought' : `Thought for ${formatElapsed(Math.max(1000, ms))}`
-  if (!opts.detail) return [c.faint(`${glyph.spark} ${label} `) + c.faint.italic('(ctrl+o to expand)')]
+  if (!opts.detail) return [c.faint(`${glyph.spark} ${label} `) + c.faint.italic(expandHint(opts))]
   return [
     c.faint(`${glyph.spark} ${label}`),
     ...wrap(text, opts.width - 4).map(line => `  ${ansi.hex(palette.muted).italic(line)}`),
@@ -198,7 +205,7 @@ export function renderTodos(todos: readonly TodoEntry[], width: number): string[
 }
 
 /** Render diff rows with gutters and tinted backgrounds. */
-export function renderDiff(diff: readonly DiffLine[], width: number, path: string | undefined, limit: number): string[] {
+export function renderDiff(diff: readonly DiffLine[], width: number, path: string | undefined, limit: number, opts?: { readonly hint?: 'keyboard' | 'click' }): string[] {
   const lang = path === undefined ? undefined : languageForPath(path)
   const numberWidth = Math.max(3, ...diff.map(line => String(line.newNo ?? line.oldNo ?? 0).length))
   const shown = diff.slice(0, limit)
@@ -212,9 +219,10 @@ export function renderDiff(diff: readonly DiffLine[], width: number, path: strin
     if (line.kind === 'add') return ansi.bgHex(palette.diffAddBg)(pad(`${c.faint(no)} ${ansi.hex(palette.diffAddFg)(sign)} ${visible}`, width))
     if (line.kind === 'del') return ansi.bgHex(palette.diffDelBg)(pad(`${c.faint(no)} ${ansi.hex(palette.diffDelFg)(sign)} ${visible}`, width))
     void row
-    return `${c.faint(no)}   ${ansi.dim(visible)}`
+    // SGR dim washes out on light backgrounds; only the dark theme uses it.
+    return `${c.faint(no)}   ${themeName() === 'dark' ? ansi.dim(visible) : visible}`
   })
-  if (diff.length > shown.length) rows.push(moreLine(diff.length - shown.length))
+  if (diff.length > shown.length) rows.push(moreLine(diff.length - shown.length, opts))
   return rows
 }
 
@@ -305,7 +313,7 @@ export function renderTool(item: Extract<Item, { kind: 'tool' }>, opts: RenderOp
     const shown = opts.detail ? extra : extra.slice(0, 3)
     const isShell = item.name === 'bash' || item.name === 'pwsh'
     body.push(...shown.map(line => isShell ? shellLine(line) : c.muted(line)))
-    if (extra.length > shown.length) body.push(moreLine(extra.length - shown.length))
+    if (extra.length > shown.length) body.push(moreLine(extra.length - shown.length, opts))
     out.push(...elbow(body, width))
     return out
   }
@@ -313,7 +321,7 @@ export function renderTool(item: Extract<Item, { kind: 'tool' }>, opts: RenderOp
   if (summary.diff !== undefined) {
     body.push(c.text(summary.headline.replace(/(\d+) addition/, (_m, n: string) => `${c.success(n)} addition`).replace(/(\d+) removal/, (_m, n: string) => `${c.error(n)} removal`)))
     const pair = editPair(item.name, item.args)
-    if (pair !== undefined) body.push(...renderDiff(summary.diff, width - 5, filePath(item.args), opts.detail ? 400 : 14))
+    if (pair !== undefined) body.push(...renderDiff(summary.diff, width - 5, filePath(item.args), opts.detail ? 400 : 14, opts))
     out.push(...elbow(body, width, false))
     return out
   }
@@ -324,16 +332,16 @@ export function renderTool(item: Extract<Item, { kind: 'tool' }>, opts: RenderOp
   const limit = opts.detail ? 300 : compactLimit
   const shown = bodyLines.slice(0, limit)
   const quietBody = limit === 0 && bodyLines.some(Boolean)
-  if (summary.headline !== '') body.push(c.text(summary.headline) + (quietBody ? ` ${c.faint.italic('(ctrl+o to expand)')}` : ''))
+  if (summary.headline !== '') body.push(c.text(summary.headline) + (quietBody ? ` ${c.faint.italic(expandHint(opts))}` : ''))
   const shell = item.name === 'bash' || item.name === 'pwsh'
   body.push(...shown.map(line => shell ? shellLine(line) : c.muted(line)))
   const hidden = bodyLines.filter(Boolean).length - shown.filter(Boolean).length
-  if (hidden > 0 && !quietBody) body.push(moreLine(hidden))
+  if (hidden > 0 && !quietBody) body.push(moreLine(hidden, opts))
   if (body.length === 0) body.push(c.faint('Done'))
   if (item.name === 'subagent' && kids.length > 0) {
     const uses = item.children?.length ?? 0
     const took = item.endedAt === undefined ? '' : ` · ${formatElapsed(item.endedAt - item.startedAt)}`
-    body[0] = c.text('Done') + c.faint(` (${String(uses)} tool use${uses === 1 ? '' : 's'}${took})`) + (quietBody ? ` ${c.faint.italic('(ctrl+o to expand)')}` : '')
+    body[0] = c.text('Done') + c.faint(` (${String(uses)} tool use${uses === 1 ? '' : 's'}${took})`) + (quietBody ? ` ${c.faint.italic(expandHint(opts))}` : '')
     out.push(...elbow([...kids, ...body], width, false))
     return out
   }
@@ -399,7 +407,7 @@ export function renderItem(item: Item, state: UiState, opts: RenderOptions): str
       const lines = item.output.replace(/\n+$/, '').split('\n')
       const shown = opts.detail ? lines : lines.slice(0, 8)
       const body = item.output.trim() === '' ? [c.faint('(no output)')] : shown.map(line => shellLine(line))
-      if (lines.length > shown.length) body.push(moreLine(lines.length - shown.length))
+      if (lines.length > shown.length) body.push(moreLine(lines.length - shown.length, opts))
       if (item.code !== 0) body.push(c.error(`exit ${String(item.code)}`))
       return [...header, ...elbow(body, width)]
     }

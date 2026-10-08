@@ -149,6 +149,10 @@ export interface UiState {
   todos: readonly TodoEntry[]
   overlays: Overlay[]
   toast: { text: string; tone: 'info' | 'warn' | 'error' | 'success'; at: number } | undefined
+  /** Fullscreen with mouse reporting switched off (native selection). */
+  mouseOff: boolean
+  /** Active palette (changes re-render everything). */
+  theme: 'dark' | 'light'
   demo: boolean
   detail: boolean
   showTodos: boolean
@@ -267,6 +271,8 @@ export function initialState(version: string, cwd: string): UiState {
     todos: [],
     overlays: [],
     toast: undefined,
+    mouseOff: false,
+    theme: 'dark',
     demo: false,
     detail: false,
     showTodos: true,

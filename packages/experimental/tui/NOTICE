@@ -1,0 +1,44 @@
+@deepseek-ai/dsh-experimental-tui
+Copyright (c) 2026 DeepSeek. Licensed under the MIT License (see the repository LICENSE).
+
+The mouse and terminal-handling code in src/mouse/ and src/ui/suspend.ts is an
+independent TypeScript implementation whose design was adapted from two
+Apache-2.0 projects. No source files were copied; where a comment names a file
+below, the behaviour described there was studied and re-implemented.
+
+-------------------------------------------------------------------------------
+OpenAI Codex CLI — https://github.com/openai/codex (studied at 624b45c4)
+Licensed under the Apache License, Version 2.0.
+Its NOTICE file reads:
+
+  OpenAI Codex
+  Copyright 2025 OpenAI
+
+  This project includes code derived from [Ratatui](https://github.com/ratatui/ratatui), licensed under the MIT license.
+  Copyright (c) 2016-2022 Florian Dehau
+  Copyright (c) 2023-2025 The Ratatui Developers
+
+Adapted ideas: the reporting-mode set and per-mode teardown with alternate
+scroll off (codex-rs/tui/src/tui/alternate_screen.rs), not capturing the mouse
+when tmux mouse mode is off (tui/tmux.rs), restoring the terminal before
+SIGTSTP and reclaiming it on resume (tui/job_control.rs), the transcript's
+wheel carry, drag selection with copy on release, multi-click word/line
+selection, right-click copy and click-to-expand tool activity
+(transcript_view/input.rs, transcript_view/disclosure.rs, text_selection.rs),
+and the clickable "back to bottom" control (transcript_view/follow_control.rs).
+
+-------------------------------------------------------------------------------
+xAI Grok Build — https://github.com/xai-org/grok-build (studied at 2bdd1d6a)
+Copyright 2023-2026 SpaceXAI. Licensed under the Apache License, Version 2.0.
+
+Adapted ideas: scroll-stream normalisation with per-terminal events-per-notch,
+wheel promotion, trackpad detection and interval-banded acceleration
+(crates/codegen/xai-grok-pager-render/src/input/mouse.rs), reassembling mouse
+reports split across reads (xai-grok-pager/src/app/csi_filter.rs and
+x10_filter.rs), re-asserting capture on focus-in (app/event_loop.rs), one
+shared teardown for exit, signals and crashes (app/terminal_restore.rs), a
+runtime mouse-reporting toggle (slash/commands/toggle_mouse_reporting.rs),
+and staying inline under Zellij.
+
+A copy of the Apache License, Version 2.0 is available at
+https://www.apache.org/licenses/LICENSE-2.0

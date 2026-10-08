@@ -1,3 +1,4 @@
+/** @jsxRuntime automatic */
 /**
  * The bordered prompt box: multi-line editing, persistent history, slash and
  * `@file` completion menus, bracketed paste collapsing, mode-aware borders,
@@ -8,16 +9,17 @@
 import { Box, Text, useInput, usePaste } from 'ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import stringWidth from '../width.ts'
-import wrapAnsi from 'wrap-ansi'
 import type { Bridge, SlashEntry } from '../bridge.ts'
 import * as ed from '../editor.ts'
 import { type FileIndex, mentionAt } from '../files.ts'
+import type { MouseController } from '../mouse/controller.ts'
+import type { MouseEvent } from '../mouse/protocol.ts'
 import { pad } from '../render.ts'
 import type { UiState } from '../store.ts'
-import { ansi, palette } from '../theme.ts'
-import { modeHint, statusLine } from './status.ts'
+import { ansi, palette, themed } from '../theme.ts'
+import { modeHint, statusLine, statusModelSpan } from './status.ts'
 
-const c = {
+const c = themed(() => ({
   text: ansi.hex(palette.text),
   muted: ansi.hex(palette.muted),
   faint: ansi.hex(palette.faint),
@@ -26,7 +28,7 @@ const c = {
   bash: ansi.hex(palette.synAttr),
   plan: ansi.hex(palette.plan),
   warning: ansi.hex(palette.warning),
-}
+}))
 
 interface MenuRow {
   readonly key: string
@@ -57,9 +59,38 @@ export interface ComposerProps {
   readonly state: UiState
   readonly width: number
   readonly frame: number
+  /** Fullscreen mouse routing; absent in inline mode. */
+  readonly mouse?: MouseController
 }
 
-export function Composer({ bridge, files, state, width, frame }: ComposerProps): React.JSX.Element {
+type HoverPart = { readonly kind: 'menu'; readonly index: number } | { readonly kind: 'body' | 'mode' | 'model' | 'interrupt' }
+
+/** Ctrl+C copies and Esc clears a transcript selection before anything else. */
+export function selectionKey(mouse: MouseController | undefined, input: string, key: { ctrl: boolean; escape: boolean }): boolean {
+  if (mouse === undefined) return false
+  if (key.ctrl && input === 'c') return mouse.copySelection()
+  if (key.escape) return mouse.clearSelection()
+  return false
+}
+
+/** Keys the fullscreen viewport owns (scrolling), which the composer must ignore. */
+interface ViewportKey {
+  shift: boolean
+  ctrl: boolean
+  upArrow: boolean
+  downArrow: boolean
+  home: boolean
+  end: boolean
+  pageUp: boolean
+  pageDown: boolean
+}
+
+export function isViewportKey(key: ViewportKey): boolean {
+  return key.pageUp || key.pageDown || (key.shift && (key.upArrow || key.downArrow)) || (key.ctrl && (key.home || key.end))
+}
+
+export function Composer({ bridge, files, state, width, frame, mouse }: ComposerProps): React.JSX.Element {
+  const [hover, setHover] = useState<HoverPart | undefined>(undefined)
   const [buffer, setBuffer] = useState<ed.EditorState>(() => carried.buffer)
   const [menuIndex, setMenuIndex] = useState(0)
   const [dismissed, setDismissed] = useState<string | undefined>(undefined)
@@ -124,8 +155,8 @@ export function Composer({ bridge, files, state, width, frame }: ComposerProps):
     })
   }
 
-  const accept = (run: boolean): void => {
-    const row = rows[selected]
+  const accept = (run: boolean, index = selected): void => {
+    const row = rows[index]
     if (row === undefined) return
     if (row.kind === 'slash') {
       const needsInput = row.entry?.hint?.startsWith('<') === true
@@ -181,6 +212,8 @@ export function Composer({ bridge, files, state, width, frame }: ComposerProps):
 
   useInput((input, key) => {
     const now = Date.now()
+    if (selectionKey(mouse, input, key)) return
+    if (mouse !== undefined && isViewportKey(key)) return
     // Shift+Tab arrives as tab+shift.
     if (key.tab && key.shift) {
       bridge.cycleMode()
@@ -318,13 +351,15 @@ export function Composer({ bridge, files, state, width, frame }: ComposerProps):
   // ---------------------------------------------------------------- render
   const inner = width - 4
   const mode = buffer.text.startsWith('!') ? 'bash' : buffer.text.startsWith('#') && !buffer.text.startsWith('##') ? 'memory' : 'prompt'
-  const borderColor = mode === 'bash' ? c.bash : mode === 'memory' ? c.plan : state.planActive ? c.plan : c.border
+  let borderColor = mode === 'bash' ? c.bash : mode === 'memory' ? c.plan : state.planActive ? c.plan : c.border
   const promptGlyph = mode === 'bash' ? c.bash('!') : mode === 'memory' ? c.plan('#') : c.muted('>')
   // The mode glyph replaces the typed marker; a single space after it is absorbed too.
   const skip = mode === 'prompt' ? 0 : buffer.text[1] === ' ' ? 2 : 1
   const shown = skip === 0 ? buffer : { text: buffer.text.slice(skip), cursor: Math.max(0, buffer.cursor - skip) }
   void frame
   const lines = renderBuffer(shown, inner - 2, true, state.running)
+  const hovering = hover?.kind === 'body' && mode === 'prompt' && !state.planActive
+  if (hovering) borderColor = c.muted
   const top = borderColor(`╭${'─'.repeat(width - 2)}╮`)
   const bottom = borderColor(`╰${'─'.repeat(width - 2)}╯`)
   const body = lines.map((line, index) => `${borderColor('│')} ${index === 0 ? promptGlyph : ' '} ${pad(line, inner - 2)} ${borderColor('│')}`)
@@ -336,6 +371,7 @@ export function Composer({ bridge, files, state, width, frame }: ComposerProps):
     const label = pad(row.label, labelWidth)
     const description = row.description === '' ? '' : clipDescription(row.description, width - labelWidth - 6)
     if (active) return `  ${c.accent(label)}${c.text(description)}`
+    if (hover?.kind === 'menu' && hover.index === index) return `  ${c.text(label)}${c.muted(description)}`
     return `  ${c.muted(label)}${c.faint(description)}`
   })
   const more = rows.length > visibleRows.length ? c.faint(`${String(rows.length - visibleRows.length)} more · keep typing to filter`) : ''
@@ -346,16 +382,76 @@ export function Composer({ bridge, files, state, width, frame }: ComposerProps):
         : mode === 'memory' ? c.plan('# memory mode') + c.faint(' · saves a note to AGENTS.md')
           : state.toast !== undefined ? toastColor(state.toast.tone)(state.toast.text)
             : modeHint(state)
-  const right = rows.length > 0 ? c.faint('tab to complete · enter to run · esc to close') : state.running ? c.faint('esc to interrupt') : c.faint('/help for shortcuts')
+  const leftIsMode = hint === undefined && rows.length === 0 && mode === 'prompt' && state.toast === undefined
+  const decoratedLeft = leftIsMode && hover?.kind === 'mode' ? ansi.underline(left) : left
+  const right = rows.length > 0 ? c.faint('tab to complete · enter to run · esc to close')
+    : state.running ? (hover?.kind === 'interrupt' ? ansi.underline(c.muted('esc to interrupt')) : c.faint('esc to interrupt'))
+      : c.faint('/help for shortcuts')
   const room = width - 4 - stringWidth(left) - stringWidth(right)
-  const footer = room >= 2 ? `  ${left}${' '.repeat(room)}${right}` : `  ${left}`
+  const footer = room >= 2 ? `  ${decoratedLeft}${' '.repeat(room)}${right}` : `  ${decoratedLeft}`
+  const status = menu.length === 0 ? statusLine(state, width - 2) : undefined
+  const modelSpan = statusModelSpan(state)
+  const decoratedStatus = status !== undefined && hover?.kind === 'model'
+    ? `  ${ansi.underline(c.text(state.model.model))}${status.slice(status.indexOf(state.model.model) + state.model.model.length)}`
+    : status
+
+  // ---------------------------------------------------------------- mouse
+  if (mouse !== undefined) {
+    const bodyTop = 1
+    const menuTop = lines.length + 2
+    const footerRow = menuTop + menu.length
+    const statusRow = footerRow + 1
+    const height = statusRow + (status === undefined ? 0 : 1)
+    const target = (row: number, col: number): HoverPart | undefined => {
+      if (row >= bodyTop && row < bodyTop + lines.length) return { kind: 'body' }
+      if (row >= menuTop && row < footerRow) {
+        const entry = visibleRows[row - menuTop]
+        return entry === undefined ? undefined : { kind: 'menu', index: entry.index }
+      }
+      if (row === footerRow) {
+        if (leftIsMode && col >= 2 && col < 2 + stringWidth(left)) return { kind: 'mode' }
+        if (state.running && rows.length === 0 && room >= 2 && col >= width - 2 - stringWidth(right)) return { kind: 'interrupt' }
+      }
+      if (row === statusRow && status !== undefined && col >= modelSpan.from && col < modelSpan.to) return { kind: 'model' }
+      return undefined
+    }
+    const onMouse = (event: MouseEvent, row: number, col: number): boolean => {
+      const part = row < 0 ? undefined : target(row, col)
+      if (event.kind === 'move' || event.kind === 'drag') {
+        if (event.kind === 'drag' && part?.kind === 'body') placeCursor(row - bodyTop, col)
+        if (JSON.stringify(part) !== JSON.stringify(hover)) setHover(part)
+        return part !== undefined
+      }
+      if (event.kind === 'wheel') {
+        if (part?.kind !== 'menu' || rows.length === 0) return false
+        setMenuIndex(Math.max(0, Math.min(rows.length - 1, selected + (event.direction === 'up' ? -1 : 1))))
+        return true
+      }
+      if (event.kind !== 'down' || event.button !== 'left' || part === undefined) return false
+      switch (part.kind) {
+        case 'body': placeCursor(row - bodyTop, col); break
+        case 'menu': setMenuIndex(part.index); accept(true, part.index); break
+        case 'mode': bridge.cycleMode(); break
+        case 'interrupt': bridge.interrupt(); break
+        case 'model': void bridge.runSlash('/model'); break
+      }
+      return true
+    }
+    const placeCursor = (row: number, col: number): void => {
+      if (buffer.text === '' || skip > 0 && buffer.text.length <= skip) return
+      const layout = ed.layoutRows(shown.text, inner - 3, stringWidth)
+      const index = ed.indexAt(shown.text, layout, row, col - 4, stringWidth) + skip
+      if (index !== buffer.cursor) setBuffer({ ...buffer, cursor: index })
+    }
+    mouse.registerBottom({ height, onMouse })
+  }
 
   return (
     <Box flexDirection="column">
       <Text>{[top, ...body, bottom].join('\n')}</Text>
       {menu.length > 0 ? <Text>{menu.join('\n')}</Text> : null}
       <Text>{footer}</Text>
-      {menu.length === 0 ? <Text>{statusLine(state, width - 2)}</Text> : null}
+      {decoratedStatus !== undefined ? <Text>{decoratedStatus}</Text> : null}
     </Box>
   )
 }
@@ -390,11 +486,20 @@ export function renderBuffer(buffer: ed.EditorState, width: number, showCursor: 
       : 'Ask DeepSeek anything · @ to attach files · / for commands'
     return [cursor(placeholder[0] ?? ' ') + c.faint(placeholder.slice(1))]
   }
-  const before = buffer.text.slice(0, buffer.cursor)
-  const at = buffer.text[buffer.cursor]
-  const after = buffer.text.slice(buffer.cursor + (at === undefined || at === '\n' ? 0 : at.length))
-  const atChar = at === undefined || at === '\n' ? ' ' : at
-  const decorate = (s: string): string => s.replace(PASTE_TOKEN, match => c.accent(match))
-  const composed = c.text(decorate(before)) + cursor(atChar) + c.text(decorate(after))
-  return composed.split('\n').flatMap(line => wrapAnsi(line, Math.max(4, width), { hard: true, trim: false }).split('\n'))
+  const text = buffer.text
+  // One cell is kept free so the cursor can sit after the last character.
+  const layout = ed.layoutRows(text, Math.max(4, width) - 1, stringWidth)
+  const decorate = (s: string): string => c.text(s.replace(PASTE_TOKEN, match => c.accent(match)))
+  return layout.map((row, index) => {
+    const slice = text.slice(row.start, row.end)
+    const next = layout[index + 1]
+    const endsLogicalLine = next === undefined || next.start !== row.end
+    if (buffer.cursor >= row.start && buffer.cursor < row.end) {
+      const offset = buffer.cursor - row.start
+      const at = Array.from(slice.slice(offset))[0] ?? ' '
+      return decorate(slice.slice(0, offset)) + cursor(at) + decorate(slice.slice(offset + at.length))
+    }
+    if (buffer.cursor === row.end && endsLogicalLine) return decorate(slice) + cursor(' ')
+    return decorate(slice)
+  })
 }

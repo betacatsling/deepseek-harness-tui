@@ -1,3 +1,4 @@
+/** @jsxRuntime automatic */
 /**
  * The root Ink component: settled transcript in <Static> scrollback, a live
  * region for in-flight tools and streaming text, the working indicator with
@@ -5,20 +6,21 @@
  * @module @deepseek-ai/dsh-experimental-tui/ui/app
  */
 
-import { Box, Static, Text, useInput } from 'ink'
-import { useSyncExternalStore } from 'react'
+import { Box, Static, Text, useApp, useInput } from 'ink'
+import { useEffect, useSyncExternalStore } from 'react'
 import type { Bridge } from '../bridge.ts'
 import type { FileIndex } from '../files.ts'
-import { renderStreamingMarkdown } from '../markdown.ts'
-import { hang, renderItem, renderTodos, wrap } from '../render.ts'
+import { hang, renderItem, renderTodos } from '../render.ts'
+import { liveTail } from '../viewport.ts'
 import type { Item, UiState } from '../store.ts'
 import { ansi, glyph, palette, spinnerFrames } from '../theme.ts'
 import { Composer } from './composer.tsx'
 import { useTerminalSize, useTick } from './hooks.ts'
 import { OverlayView } from './overlays.tsx'
 import { workingLine } from './status.ts'
+import { suspendToShell } from './suspend.ts'
 
-const faint = ansi.hex(palette.faint)
+const faint = (text: string): string => ansi.hex(palette.faint)(text)
 
 /** Root props. */
 export interface AppProps {
@@ -41,15 +43,7 @@ export function liveLines(state: UiState, width: number, frame: number, budget: 
     const lines = renderItem(item, state, { width, detail: state.detail, frame })
     if (lines.length > 0) out.push('', ...lines)
   }
-  const live = state.live
-  if (live !== undefined) {
-    if (state.detail && live.reasoning !== '') {
-      out.push('', faint(`${glyph.spark} Thinking…`), ...wrap(live.reasoning.trim(), width - 4).map(line => `  ${ansi.hex(palette.muted).italic(line)}`))
-    }
-    if (live.text !== '') {
-      out.push('', ...hang(`${ansi.hex(palette.text)(glyph.bullet)} `, '  ', renderStreamingMarkdown(live.text, width - 2)))
-    }
-  }
+  out.push(...liveTail(state, width))
   if (out.length > budget) {
     const hidden = out.length - budget + 1
     return [faint(`  ⋮ +${String(hidden)} lines`), ...out.slice(-budget + 1)]
@@ -76,6 +70,11 @@ export function App({ bridge, files }: AppProps): React.JSX.Element {
   const frame = useTick(animating(state))
   const width = Math.max(40, columns - 1)
   const overlay = state.overlays[state.overlays.length - 1]
+  const { suspendTerminal } = useApp()
+  useEffect(() => {
+    bridge.suspend = () => suspendToShell(suspendTerminal)
+    return () => { bridge.suspend = undefined }
+  }, [bridge, suspendTerminal])
 
   useInput((input, key) => {
     if (key.ctrl && input === 'o') {
@@ -86,6 +85,8 @@ export function App({ bridge, files }: AppProps): React.JSX.Element {
       bridge.store.update((draft) => { draft.showTodos = !draft.showTodos })
     } else if (key.ctrl && input === 'l') {
       bridge.reprint(true)
+    } else if (key.ctrl && input === 'z') {
+      void bridge.suspend?.()
     }
   })
 

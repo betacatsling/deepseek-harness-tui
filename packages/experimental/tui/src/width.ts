@@ -8,7 +8,9 @@
 
 import stringWidth from 'string-width'
 
-const NARROW = /[\u23FA\u25FC\u23F8\u2714\u2733\u26A0\u23F5]/gu
+// Explicit symbols plus any pictograph whose default presentation is text
+// (e.g. ℹ ☺ ✈) when no VS16 selector asks for the emoji form.
+const NARROW = /[\u23FA\u25FC\u23F8\u2714\u2733\u26A0\u23F5]|(?!\p{Emoji_Presentation})\p{Extended_Pictographic}(?!\uFE0F)/gu
 
 /** Visible width of an ANSI string in terminal cells. */
 export default function textWidth(text: string): number {

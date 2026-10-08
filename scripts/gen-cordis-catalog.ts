@@ -60,6 +60,7 @@ export const SERVICE_PAGE: Record<string, string> = {
   pluginRegistryProbe: 'boot.md',
   configEditor: 'boot.md',
   profileContext: 'boot.md',
+  tuiStartup: 'boot.md',
   hmr: 'boot.md',
   mcpResources: 'mcp.md',
   agentLoop: 'core.md',

@@ -32,6 +32,10 @@ export interface TuiStartupValues {
   permission: string | undefined
   /** Optional first prompt submitted right after the banner. */
   prompt: string | undefined
+  /** Fullscreen with mouse support (true), classic inline (false), or auto (undefined). */
+  mouse: boolean | undefined
+  /** `--theme` value (auto, dark, light) when given. */
+  theme: string | undefined
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -54,6 +58,9 @@ export function tuiCommand(): Command {
     .option('-c, --continue', 'resume the most recent session in this directory')
     .option('-m, --model <route>', 'starting model, as provider/model or a model id')
     .option('-p, --permission <preset>', 'starting permission preset, e.g. workspace-write')
+    .option('--mouse', 'fullscreen UI with mouse support (default, except under Zellij)')
+    .option('--no-mouse', 'classic inline UI: native scrollback and selection, no mouse capture')
+    .option('--theme <theme>', 'colour theme: auto (detect the terminal background), dark, or light')
     .argument('[prompt...]', 'optional first prompt')
     .addHelpText('after', `
 Examples:
@@ -61,6 +68,7 @@ Examples:
   dsh tui --demo                  try every feature with the scripted demo model
   dsh tui -c                      continue the latest session here
   dsh tui "explain this repo"     start with a first prompt
+  dsh tui --no-mouse              keep the terminal's own scrollback and selection
 `)
 }
 
@@ -77,7 +85,10 @@ export function apply(ctx: Context): void {
       continue?: boolean
       model?: string
       permission?: string
+      mouse?: boolean
+      theme?: string
     }>()
+    const envMouse = process.env.DSH_TUI_MOUSE
     const prompt = program.args.join(' ').trim()
     ctx.provide(TUI_STARTUP_SERVICE, {
       demo: options.demo === true || process.env.DSH_TUI_DEMO === '1',
@@ -86,6 +97,8 @@ export function apply(ctx: Context): void {
       model: options.model,
       permission: options.permission,
       prompt: prompt === '' ? undefined : prompt,
+      mouse: options.mouse ?? (envMouse === '0' ? false : envMouse === '1' ? true : undefined),
+      theme: options.theme,
     } satisfies TuiStartupValues)
   })
   parseCmdline(ctx, program)

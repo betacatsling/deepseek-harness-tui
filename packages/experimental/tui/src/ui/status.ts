@@ -7,9 +7,9 @@
 import stringWidth from '../width.ts'
 import { formatElapsed, formatTokens, tildify } from '../format.ts'
 import type { UiState } from '../store.ts'
-import { ansi, glyph, palette, spinnerFrames, workingVerbs } from '../theme.ts'
+import { ansi, glyph, palette, spinnerFrames, themed, workingVerbs } from '../theme.ts'
 
-const c = {
+const c = themed(() => ({
   text: ansi.hex(palette.text),
   muted: ansi.hex(palette.muted),
   faint: ansi.hex(palette.faint),
@@ -18,7 +18,7 @@ const c = {
   warning: ansi.hex(palette.warning),
   danger: ansi.hex(palette.danger),
   success: ansi.hex(palette.success),
-}
+}))
 
 /** Left footer hint for the current permission or plan mode. */
 export function modeHint(state: UiState): string {
@@ -65,9 +65,16 @@ export function statusLine(state: UiState, width: number): string {
   if (state.goal !== undefined) extras.push(c.accent(`◎ ${state.goal.length > 28 ? `${state.goal.slice(0, 27)}…` : state.goal}`))
   if (state.jobs > 0) extras.push(c.muted(`${String(state.jobs)} job${state.jobs === 1 ? '' : 's'}`))
   if (state.problems > 0) extras.push(c.warning(`${String(state.problems)} log warning${state.problems === 1 ? '' : 's'} · /logs`))
-  const parts = [model, ctx, tokens, cwd, ...extras]
+  // Mouse capture being off changes how the screen behaves, so it outranks the rest.
+  const parts = [model, ctx, ...state.mouseOff ? [c.muted('○ mouse off · /mouse on')] : [], tokens, cwd, ...extras]
   while (parts.length > 1 && stringWidth(`  ${parts.join(sep)}`) > width) parts.pop()
   return `  ${parts.join(sep)}`
+}
+
+/** Columns of the clickable model segment at the start of {@link statusLine}. */
+export function statusModelSpan(state: UiState): { from: number; to: number } {
+  const label = state.model.model + (state.model.effort === undefined ? '' : ` ${state.model.effort}`) + (state.demo ? ' demo' : '')
+  return { from: 2, to: 2 + stringWidth(label) }
 }
 
 /** Shimmer: a soft highlight sweeping across the text. */
@@ -77,9 +84,9 @@ export function shimmer(text: string, frame: number): string {
   const head = (frame % span) - 4
   return chars.map((ch, index) => {
     const distance = Math.abs(index - head)
-    if (distance === 0) return ansi.hex('#DCE3FF')(ch)
-    if (distance === 1) return ansi.hex('#A9B8FF')(ch)
-    if (distance === 2) return ansi.hex('#8CA0FF')(ch)
+    if (distance === 0) return ansi.hex(palette.shimmer1)(ch)
+    if (distance === 1) return ansi.hex(palette.shimmer2)(ch)
+    if (distance === 2) return ansi.hex(palette.shimmer3)(ch)
     return c.accent(ch)
   }).join('')
 }

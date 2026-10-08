@@ -7,6 +7,7 @@
  * @module @deepseek-ai/dsh-experimental-tui
  */
 
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { render } from 'ink'
@@ -17,9 +18,18 @@ import { Bridge, dshHome, hasDeepSeekKey } from './bridge.ts'
 import { DEMO_PROVIDER, DemoLlmAdapter } from './demo/adapter.ts'
 import { FileIndex } from './files.ts'
 import { captureLogs } from './log-capture.ts'
-import { initialState, Store } from './store.ts'
-export { initialState } from './store.ts'
+import { MouseController } from './mouse/controller.ts'
+import { createFilteredStdin, type FilteredStdin } from './mouse/stdin.ts'
+import { TerminalModes } from './mouse/terminal.ts'
+import { chooseScreen } from './screen-mode.ts'
+import { readSettings } from './settings.ts'
+import { initialState, Store, type UiState } from './store.ts'
+import { chooseTheme, parseThemeSetting, queryBackground, type ThemeChoice, themeFromAppleProfile } from './terminal-theme.ts'
+import { ansi, palette, setColorLevel, setTheme } from './theme.ts'
 import { App } from './ui/app.tsx'
+import { FullscreenApp } from './ui/fullscreen.tsx'
+import { buildTranscript } from './viewport.ts'
+export { initialState } from './store.ts'
 
 export { DEMO_MODEL, DEMO_PROVIDER, DemoLlmAdapter } from './demo/adapter.ts'
 export { Bridge } from './bridge.ts'
@@ -34,6 +44,38 @@ export const inject = ['tuiStartup', 'agents', 'llm', 'commands']
 /** Plugin config (none yet; flags come from `tuiStartup`). */
 export interface Config {}
 
+
+function readAppleProfile(): string | undefined {
+  if (process.platform !== 'darwin' || process.env.TERM_PROGRAM !== 'Apple_Terminal') return undefined
+  try {
+    return execFileSync('defaults', ['read', 'com.apple.Terminal', 'Default Window Settings'], { timeout: 300, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch (error: unknown) {
+    void error
+    return undefined
+  }
+}
+
+/** Flag → env → tui.json → detection. */
+async function resolveTheme(flag: string | undefined): Promise<ThemeChoice> {
+  const env = process.env
+  // Terminal.app before macOS 26 has no truecolor; 256 colours map the palette faithfully.
+  if (env.TERM_PROGRAM === 'Apple_Terminal' && !/truecolor|24bit/i.test(env.COLORTERM ?? '')) setColorLevel(2)
+  const fromFlag = parseThemeSetting(flag)
+  const fromEnv = parseThemeSetting(env.DSH_TUI_THEME)
+  const fromConfig = parseThemeSetting(readSettings(dshHome()).theme)
+  if (flag !== undefined && fromFlag === undefined) process.stderr.write(`dsh tui: unknown --theme ${JSON.stringify(flag)} (use auto, dark or light)\n`)
+  const explicit = fromFlag !== undefined ? { setting: fromFlag, source: 'flag' as const }
+    : fromEnv !== undefined ? { setting: fromEnv, source: 'env' as const }
+      : fromConfig !== undefined ? { setting: fromConfig, source: 'config' as const }
+        : undefined
+  return chooseTheme(explicit, env, () => queryBackground(process.stdin, process.stdout), () => themeFromAppleProfile(readAppleProfile()))
+}
+
+/** The settled conversation, printed to the primary screen after fullscreen exits. */
+function exitTranscript(state: UiState, width: number): string {
+  const lines = buildTranscript({ ...state, live: undefined }, { width, expanded: new Set(), frame: 0 }).lines
+  return lines.length === 0 ? '' : `${lines.join('\n')}\n`
+}
 
 function packageVersion(): string {
   return process.env.DSH_VERSION ?? '0.2.1-alpha.1'
@@ -66,8 +108,34 @@ export function apply(ctx: Context): void {
       queueMicrotask(() => exit?.(2))
       return () => {}
     }
+    const life: { disposed: boolean; teardown?: () => void } = { disposed: false }
+    void (async () => {
+      const theme = await resolveTheme(startup.theme)
+      if (life.disposed) return
+      setTheme(theme.theme)
+      store.update((draft) => { draft.theme = theme.theme })
+      life.teardown = mount(theme)
+    })()
+    return () => {
+      life.disposed = true
+      life.teardown?.()
+    }
+  }, 'tui app')
+
+  /** Render the UI; returns the dispose-time cleanup. */
+  function mount(theme: ThemeChoice): () => void {
     const logs = captureLogs(join(dshHome(), 'logs', `tui-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.log`))
+    const screen = chooseScreen(startup.mouse)
+    const modes = new TerminalModes(process.stdout)
     let exiting = false
+    let mouse: MouseController | undefined
+    let stdin: FilteredStdin | undefined
+    const restoreTerminal = (): void => {
+      mouse?.dispose()
+      modes.restoreSync()
+      modes.uninstall()
+      stdin?.dispose()
+    }
     const bridge = new Bridge(ctx, store, {
       demo,
       demoReason,
@@ -77,24 +145,49 @@ export function apply(ctx: Context): void {
       permission: startup.permission,
       prompt: startup.prompt,
       logs,
+      theme,
       requestExit: (code) => {
         if (exiting) return
         exiting = true
         void (async () => {
+          modes.disable()
           instance.unmount()
+          await instance.waitUntilExit().catch(() => {})
+          restoreTerminal()
           await bridge.dispose()
           logs.restore()
+          // Leaving the alternate screen drops the conversation; keep it in scrollback.
+          if (screen.fullscreen) process.stdout.write(exitTranscript(store.get(), Math.max(40, (process.stdout.columns || 100) - 1)))
           const id = store.get().sessionId
-          if (id !== undefined) process.stdout.write(`\n\x1b[38;2;91;98;117mSession saved · resume with: dsh --profile tui -r ${id}\x1b[0m\n`)
+          if (id !== undefined) process.stdout.write(`\n${ansi.hex(palette.faint)(`Session saved · resume with: dsh --profile tui -r ${id}`)}\n`)
           exit?.(code)
         })()
       },
     })
-    const instance = render(createElement(App, { bridge, files }), {
+    if (screen.fullscreen) {
+      const controller = new MouseController({
+        modes,
+        write: (data) => { process.stdout.write(data) },
+        toast: (text, tone) => { bridge.toast(text, tone) },
+        copyOnSelect: process.env.DSH_TUI_COPY_ON_SELECT !== '0',
+      }, screen.capture)
+      mouse = controller
+      stdin = createFilteredStdin(process.stdin, (event) => { controller.handle(event) })
+      if (screen.capture) modes.enable()
+      else store.update((draft) => { draft.mouseOff = true })
+      if (screen.note !== undefined) bridge.toast(screen.note, 'info')
+    }
+    const fullscreenOptions = stdin === undefined ? undefined : {
       exitOnCtrlC: false,
       patchConsole: false,
-      maxFps: 30,
-    })
+      maxFps: 60,
+      alternateScreen: true,
+      incrementalRendering: true,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+    }
+    const instance = mouse !== undefined && fullscreenOptions !== undefined
+      ? render(createElement(FullscreenApp, { bridge, files, mouse }), fullscreenOptions)
+      : render(createElement(App, { bridge, files }), { exitOnCtrlC: false, patchConsole: false, maxFps: 30 })
     void files.ensure()
     bridge.start().catch((error: unknown) => {
       store.update((draft) => {
@@ -104,10 +197,12 @@ export function apply(ctx: Context): void {
     })
     return () => {
       if (!exiting) {
+        restoreTerminal()
         instance.unmount()
         void bridge.dispose()
         logs.restore()
       }
     }
-  }, 'tui app')
+  }
+
 }
