@@ -1,0 +1,39 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "jsx": "react-jsx",
+    "types": ["node", "react"]
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cosmokit" },
+    { "path": "../../../vendor/schemastery" },
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../../vendor/loader" },
+    { "path": "../../util/brand" },
+    { "path": "../../boot/cmdline" },
+    { "path": "../../llm/llm" },
+    { "path": "../../llm/token-meter" },
+    { "path": "../../core/session" },
+    { "path": "../../core/agent" },
+    { "path": "../../core/agent-default-model" },
+    { "path": "../../interaction/commands" },
+    { "path": "../../interaction/permission-presets" },
+    { "path": "../../interaction/user-approval" },
+    { "path": "../../interaction/user-questions" },
+    { "path": "../../interaction/tool-ask-user" },
+    { "path": "../../compaction/compaction" },
+    { "path": "../../fs/fs" },
+    { "path": "../../goal/goal" },
+    { "path": "../../jobs/jobs" },
+    { "path": "../../plan/plan-mode" },
+    { "path": "../../session/session-projection" },
+    { "path": "../../session/session-title" },
+    { "path": "../../session-query/session-query" },
+    { "path": "../../skill/skill" },
+    { "path": "../../subagent/subagent" },
+    { "path": "../../todo/tool-todo" }
+  ]
+}

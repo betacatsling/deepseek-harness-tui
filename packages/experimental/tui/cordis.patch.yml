@@ -1,0 +1,31 @@
+# The dsh-experimental-tui bundle patch: an interactive Claude Code-style
+# terminal surface directly over dsh-base, in-process like dsh-headless. It
+# mounts no Host, HTTP server, or browser runtime. An ordinary provider plugin
+# parses this app's flags (`dsh --profile tui [--demo] [-c] [prompt]`) and the
+# TUI row waits for that service before it takes over the terminal.
+
+- id: system-prompt
+  config:
+    personaSuffix: Your working directory is {{cwd}}.
+    personaPrefix: >-
+      You are a coding agent powered by the {{model}} model, working with the
+      user in an interactive terminal. Keep replies concise and use Markdown.
+
+- id: tools
+  config:
+    mode: !!js process.env.DSH_TOOLS_MODE
+
+- insert:
+    # The interactive surface can answer questions, so the model may ask them.
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+
+    - id: tui-startup
+      name: '@deepseek-ai/dsh-experimental-tui/startup'
+
+    - id: tui
+      name: '@deepseek-ai/dsh-experimental-tui'
+      inject: [tuiStartup]
+
+- id: hmr
+  disabled: true

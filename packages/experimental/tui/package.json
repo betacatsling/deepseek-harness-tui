@@ -1,0 +1,88 @@
+{
+  "name": "@deepseek-ai/dsh-experimental-tui",
+  "description": "Experimental Claude Code-style terminal UI profile bundle for DeepSeek Harness",
+  "version": "0.2.1-alpha.1",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./startup": {
+      "types": "./lib/types/startup.d.ts",
+      "default": "./lib/startup.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/startup.js",
+    "cordis.patch.yml",
+    "lib/types/**/*.d.ts"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b && node scripts/bundle.mjs",
+    "typecheck": "tsc -b --noEmit false",
+    "test": "vitest run --root ../../.. packages/experimental/tui"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-brand": "workspace:*",
+    "@deepseek-ai/dsh-cmdline": "workspace:*",
+    "@deepseek-ai/dsh-tool-ask-user": "workspace:*",
+    "@deepseek-ai/schemastery": "workspace:~",
+    "chalk": "^5.6.2",
+    "commander": "^15.0.0",
+    "highlight.js": "11.11.1",
+    "ink": "7.1.1",
+    "marked": "16.4.2",
+    "react": "19.2.0",
+    "string-width": "^7.2.0",
+    "wrap-ansi": "^9.0.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/cordis-plugin-loader": "workspace:~",
+    "@deepseek-ai/dsh-agent": "workspace:*",
+    "@deepseek-ai/dsh-agent-default-model": "workspace:*",
+    "@deepseek-ai/dsh-llm": "workspace:*",
+    "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-session-query": "workspace:*"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/cordis-plugin-loader": "workspace:~",
+    "@deepseek-ai/dsh-agent": "workspace:*",
+    "@deepseek-ai/dsh-agent-default-model": "workspace:*",
+    "@deepseek-ai/dsh-commands": "workspace:*",
+    "@deepseek-ai/dsh-compaction": "workspace:*",
+    "@deepseek-ai/dsh-fs": "workspace:*",
+    "@deepseek-ai/dsh-goal": "workspace:*",
+    "@deepseek-ai/dsh-jobs": "workspace:*",
+    "@deepseek-ai/dsh-llm": "workspace:*",
+    "@deepseek-ai/dsh-permission-presets": "workspace:*",
+    "@deepseek-ai/dsh-plan-mode": "workspace:*",
+    "@deepseek-ai/dsh-session": "workspace:*",
+    "@deepseek-ai/dsh-session-projection": "workspace:*",
+    "@deepseek-ai/dsh-session-query": "workspace:*",
+    "@deepseek-ai/dsh-session-title": "workspace:*",
+    "@deepseek-ai/dsh-skill": "workspace:*",
+    "@deepseek-ai/dsh-subagent": "workspace:*",
+    "@deepseek-ai/dsh-token-meter": "workspace:*",
+    "@deepseek-ai/dsh-tool-todo": "workspace:*",
+    "@deepseek-ai/dsh-user-approval": "workspace:*",
+    "@deepseek-ai/dsh-user-questions": "workspace:*",
+    "@types/react": "19.2.2",
+    "ink-testing-library": "4.0.0"
+  }
+}

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Source launcher for the experimental TUI profile. It creates the `tui`
+# profile under $DSH_HOME (default ~/.dsh) on first use, then starts dsh from
+# this checkout with that profile. All arguments go to the TUI.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
+PROFILE="$HOME_DIR/profiles/tui"
+if [ ! -f "$PROFILE/package.json" ]; then
+  mkdir -p "$PROFILE"
+  cat > "$PROFILE/package.json" <<'JSON'
+{
+  "name": "dsh-profile-tui",
+  "private": true,
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-experimental-tui"]
+    }
+  }
+}
+JSON
+  [ -f "$PROFILE/cordis.patch.yml" ] || echo "[]" > "$PROFILE/cordis.patch.yml"
+fi
+export TSX_TSCONFIG_PATH="${TSX_TSCONFIG_PATH:-$ROOT/tsconfig.json}"
+exec node --import "$ROOT/node_modules/tsx/dist/esm/index.mjs" "$ROOT/apps/cli/src/bin.ts" --profile tui "$@"
