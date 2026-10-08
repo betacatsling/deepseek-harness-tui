@@ -34,9 +34,14 @@ describe('transcript rendering', () => {
     expect(pending.at(-1)).toContain('Running…')
   })
 
-  it('keeps every banner row the same width', () => {
+  it.each([64, 80, 88, 100, 112, 160])('keeps every banner row aligned at %i columns', (width) => {
     const state = { ...initialState('0.2.1', '/workspace/acme-api'), recent: [{ id: 's', title: 'Explain acme-api', ago: '2m ago' }] }
-    const widths = new Set(renderBanner(state, 100).map(line => textWidth(line)))
-    expect(widths.size).toBe(1)
+    const widths = new Set(renderBanner(state, width).map(line => textWidth(line)))
+    expect([...widths]).toEqual([Math.min(width, 112)])
+  })
+
+  it.each([80, 100])('renders the whale in the welcome banner at %i columns', (width) => {
+    const state = { ...initialState('0.2.1', '/workspace/acme-api'), recent: [{ id: 's', title: 'Explain acme-api', ago: '2m ago' }] }
+    expect(plain(renderBanner(state, width)).join('\n')).toMatchSnapshot()
   })
 })

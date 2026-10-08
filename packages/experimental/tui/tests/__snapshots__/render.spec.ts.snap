@@ -1,0 +1,44 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`transcript rendering > renders the whale in the welcome banner at 80 columns 1`] = `
+"╭─ ✻ DeepSeek Harness v0.2.1 ──────────────────────────────────────────────────╮
+│                                                                              │
+│ Welcome to DeepSeek Harness                                                  │
+│                                                                              │
+│  ▄▄▄  ▄▄▄       ▄▄▄▄▄▄▄                                                      │
+│   ▀█▄▄█▀    ▄████████████▄                                                   │
+│     ▀█▄   ▄████████████▀███                                                  │
+│       ▀███████████████████▀                                                  │
+│           ▀▀███████████▀▀                                                    │
+│                  ███▀                                                        │
+│                                                                              │
+│ deepseek-v4-flash                                                            │
+│ /workspace/acme-api                                                          │
+│                                                                              │
+│ Tips for getting started                                                     │
+│ Ask anything, or try /init for AGENTS.md                                     │
+│ Use @ to attach files, ! for shell                                           │
+│ shift+tab cycles permission & plan mode                                      │
+│ ────────────────────────────────────────                                     │
+│ Recent activity                                                              │
+│ Explain acme-api · 2m ago                                                    │
+│ /resume for more                                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`transcript rendering > renders the whale in the welcome banner at 100 columns 1`] = `
+"╭─ ✻ DeepSeek Harness v0.2.1 ──────────────────────────────────────────────────────────────────────╮
+│                                        │                                                         │
+│      Welcome to DeepSeek Harness       │ Tips for getting started                                │
+│                                        │ Ask anything, or try /init for AGENTS.md                │
+│       ▄▄▄  ▄▄▄       ▄▄▄▄▄▄▄           │ Use @ to attach files, ! for shell                      │
+│        ▀█▄▄█▀    ▄████████████▄        │ shift+tab cycles permission & plan mode                 │
+│          ▀█▄   ▄████████████▀███       │ ────────────────────────────────────────                │
+│            ▀███████████████████▀       │ Recent activity                                         │
+│                ▀▀███████████▀▀         │ Explain acme-api · 2m ago                               │
+│                       ███▀             │ /resume for more                                        │
+│                                        │                                                         │
+│           deepseek-v4-flash            │                                                         │
+│          /workspace/acme-api           │                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯"
+`;

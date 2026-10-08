@@ -21,6 +21,7 @@ calls it emits still run through the harness's real tools, sandbox and approvals
 
 ## Features
 
+- Welcome banner with a blue, six-row Unicode block whale, a forked tail and a pectoral fin.
 - Chat REPL with a bordered composer, multi-line editing (Shift+Enter / Ctrl+J / `\`), emacs keys, history (↑/↓), bracketed paste.
 - Streaming Markdown with syntax-highlighted code blocks and boxed tables.
 - `⏺` / `⎿` tool-step blocks with live status, real-line-number diffs, and folded subagent steps.

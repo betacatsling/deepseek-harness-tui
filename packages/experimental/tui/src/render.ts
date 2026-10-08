@@ -84,11 +84,14 @@ function moreLine(hidden: number, what = 'lines'): string {
 
 // ---------------------------------------------------------------- banner
 
+// Trailing spaces keep the whale aligned when the banner centers each row.
 const LOGO = [
-  '▄          ▄▄▄▄▄    ',
-  '▀█▄    ▄▄█████████▄ ',
-  '  ▀██▄█████████▀███ ',
-  '    ▀▀██████████▀▀▀ ',
+  ' ▄▄▄  ▄▄▄       ▄▄▄▄▄▄▄     ',
+  '  ▀█▄▄█▀    ▄████████████▄  ',
+  '    ▀█▄   ▄████████████▀███ ',
+  '      ▀███████████████████▀ ',
+  '          ▀▀███████████▀▀   ',
+  '                 ███▀       ',
 ]
 
 /** Welcome box: logo and setup on the left, tips and recent sessions on the right. */
