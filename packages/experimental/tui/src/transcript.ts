@@ -7,7 +7,8 @@
 
 import type {} from '@deepseek-ai/dsh-compaction'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import type { Item, Store, TodoEntry } from './store.ts'
+import type { ChildStep, Item, Store, TodoEntry } from './store.ts'
+import { toolTitle } from './tool-format.ts'
 
 /** Parse raw tool-call arguments the way the executor does. */
 export function parseArgs(raw: string): Record<string, unknown> {
@@ -31,6 +32,11 @@ export function joinText(blocks: readonly { type: string; text?: string }[]): st
 /** Whether a user message came from the human (not injected runtime context). */
 export function isHumanMessage(source: unknown): boolean {
   return typeof source === 'object' && source !== null && (source as { kind?: unknown }).kind === 'user'
+}
+
+/** One nested call inside a `run_code` program, keyed by subCallId. */
+interface DispatchStep extends ChildStep {
+  readonly subCallId: string
 }
 
 /** Options for one projection pass. */
@@ -180,6 +186,37 @@ export function projectEvent(store: Store, event: SessionEvent, hooks: Projector
       store.update((draft) => { draft.toast = undefined })
       return true
     }
+    case 'tool/ptc-dispatch-start': {
+      const data = event.data
+      const step: DispatchStep = {
+        subCallId: data.subCallId,
+        label: dispatchLabel(data.name, data.arguments),
+        status: 'running',
+      }
+      store.update((draft) => {
+        const index = findTool(draft.items, data.rootCallId)
+        const item = index < 0 ? undefined : draft.items[index]
+        if (item?.kind !== 'tool') return
+        draft.items[index] = { ...item, children: [...item.children ?? [], step] }
+      })
+      // A program can keep the checklist too; mirror it like a top-level call.
+      const todos = (data.arguments as { todos?: unknown } | null)?.todos
+      if (data.name === 'todo_write' && Array.isArray(todos)) store.update((draft) => { draft.todos = todos as TodoEntry[] })
+      return true
+    }
+    case 'tool/ptc-dispatch': {
+      const data = event.data
+      store.update((draft) => {
+        const index = findTool(draft.items, data.rootCallId)
+        const item = index < 0 ? undefined : draft.items[index]
+        if (item?.kind !== 'tool' || item.children === undefined) return
+        const children = item.children.map(child => isDispatch(child) && child.subCallId === data.subCallId
+          ? { ...child, status: data.isError ? 'error' as const : 'ok' as const }
+          : child)
+        draft.items[index] = { ...item, children }
+      })
+      return true
+    }
     case 'turn/end': {
       const reason = event.data.reason
       store.update((draft) => {
@@ -205,4 +242,22 @@ export function projectEvent(store: Store, event: SessionEvent, hooks: Projector
     default:
       return false
   }
+}
+
+function isDispatch(step: ChildStep): step is DispatchStep {
+  return 'subCallId' in step
+}
+
+function findTool(items: readonly Item[], callId: string): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item?.kind === 'tool' && item.callId === callId) return index
+  }
+  return -1
+}
+
+/** `Read(src/limiter.js)` style label for one nested dispatch. */
+function dispatchLabel(name: string, args: unknown): string {
+  const record = args !== null && typeof args === 'object' && !Array.isArray(args) ? args as Record<string, unknown> : {}
+  return toolTitle(name, record)
 }

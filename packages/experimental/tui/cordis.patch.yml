@@ -1,9 +1,17 @@
 # The dsh-experimental-tui bundle patch: an interactive Claude Code-style
 # terminal surface directly over dsh-base, in-process like dsh-headless. It
 # mounts no Host, HTTP server, or browser runtime. An ordinary provider plugin
-# parses this app's flags (`dsh --profile tui [--demo] [-c] [prompt]`) and the
-# TUI row waits for that service before it takes over the terminal.
+# parses this app's flags (`dsh --profile tui [--demo] [--mode id] [-c] [prompt]`)
+# and the TUI row waits for that service before it takes over the terminal.
+#
+# Agents are composed by agent presets, exactly as on the Web surface: the
+# preset registry below plus the four declarations under presets/ (listed after
+# this file in package.json `dsh.bundle.patch`). Each session binds one preset
+# when it is created (`--mode`, `/mode`), the log records it, and resume
+# rebuilds the same composition.
 
+# The host persona only reaches agents without a preset persona; every shipped
+# preset brings its own, so this is the fallback for custom presets.
 - id: system-prompt
   config:
     personaSuffix: Your working directory is {{cwd}}.
@@ -11,14 +19,114 @@
       You are a coding agent powered by the {{model}} model, working with the
       user in an interactive terminal. Keep replies concise and use Markdown.
 
+# Process-wide presentation override kept for compatibility: DSH_TOOLS_MODE
+# (native|ptc|both) forces one presentation on every session. Prefer
+# `--mode ptc`, which scopes PTC to one session through its preset.
 - id: tools
   config:
     mode: !!js process.env.DSH_TOOLS_MODE
 
+# ── the agent plane moves behind agent presets ───────────────────────────────
+#
+# The same rows the Web bundle disables (packages/bundle/web-app/cordis.patch.yml,
+# "the agent plane moves behind agent presets"), for the same reasons: each
+# preset mounts its own copy inside the session scope, and a host copy would
+# leak into every preset or collide with the preset's registration. Registries
+# (skills, jobs, goals, subagents, token meter, PTC runtime) stay on the host.
+
+- id: tool-plugin-manager
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: skill-filesystem
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: command-goal
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: plan-mode
+  disabled: true
+
+- id: compaction-basic
+  disabled: true
+
+- id: command-compact
+  disabled: true
+
+- id: tool-result-pruner
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: workflow-ptc
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: agent-instructions
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-web
+  disabled: true
+
 - insert:
-    # The interactive surface can answer questions, so the model may ask them.
-    - id: tool-ask-user
-      name: '@deepseek-ai/dsh-tool-ask-user'
+    # The preset selection registry; `standard` unless `--mode` says otherwise.
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: standard
+
+    # Host-owned opt-in the presets' `subagent` row samples (modelSelectionSettings:
+    # true) when a session gets its delegation tools. Off unless configured.
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+
+    # Creator mode's `cordis_inspect_*` tools read the host inspect registry.
+    # The runner provides it (`cordisInspect`) and the providers register once
+    # per process, as on the Web surface. Without a browser, Client queries
+    # report that no page is connected; Host queries work.
+    - id: cordis-host-runner
+      name: '@deepseek-ai/dsh-cordis-host-runner'
+
+    - id: cordis-inspect-providers
+      name: '@deepseek-ai/dsh-tool-cordis/host'
 
     - id: tui-startup
       name: '@deepseek-ai/dsh-experimental-tui/startup'

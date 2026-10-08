@@ -3366,6 +3366,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'mode: string | undefined',
+        description: 'Agent mode (agent preset id or alias) for new sessions.',
+        parameters: [],
+      },
+      {
         signature: 'prompt: string | undefined',
         description: 'Optional first prompt submitted right after the banner.',
         parameters: [],

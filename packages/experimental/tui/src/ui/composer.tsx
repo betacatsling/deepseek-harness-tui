@@ -17,7 +17,7 @@ import type { MouseEvent } from '../mouse/protocol.ts'
 import { pad } from '../render.ts'
 import type { UiState } from '../store.ts'
 import { ansi, palette, themed } from '../theme.ts'
-import { modeHint, statusLine, statusModelSpan } from './status.ts'
+import { modeBadgeText, modeHint, statusLine, statusModeSpan, statusModelSpan } from './status.ts'
 
 const c = themed(() => ({
   text: ansi.hex(palette.text),
@@ -63,7 +63,7 @@ export interface ComposerProps {
   readonly mouse?: MouseController
 }
 
-type HoverPart = { readonly kind: 'menu'; readonly index: number } | { readonly kind: 'body' | 'mode' | 'model' | 'interrupt' }
+type HoverPart = { readonly kind: 'menu'; readonly index: number } | { readonly kind: 'body' | 'mode' | 'model' | 'agentMode' | 'interrupt' }
 
 /** Ctrl+C copies and Esc clears a transcript selection before anything else. */
 export function selectionKey(mouse: MouseController | undefined, input: string, key: { ctrl: boolean; escape: boolean }): boolean {
@@ -391,9 +391,11 @@ export function Composer({ bridge, files, state, width, frame, mouse }: Composer
   const footer = room >= 2 ? `  ${decoratedLeft}${' '.repeat(room)}${right}` : `  ${decoratedLeft}`
   const status = menu.length === 0 ? statusLine(state, width - 2) : undefined
   const modelSpan = statusModelSpan(state)
+  const agentModeSpan = statusModeSpan(state)
   const decoratedStatus = status !== undefined && hover?.kind === 'model'
-    ? `  ${ansi.underline(c.text(state.model.model))}${status.slice(status.indexOf(state.model.model) + state.model.model.length)}`
-    : status
+    ? `${status.slice(0, status.indexOf(state.model.model))}${ansi.underline(c.text(state.model.model))}${status.slice(status.indexOf(state.model.model) + state.model.model.length)}`
+    : status !== undefined && hover?.kind === 'agentMode' ? `  ${ansi.underline(c.text(modeBadgeText(state)))}${status.slice(status.indexOf(modeBadgeText(state)) + modeBadgeText(state).length)}`
+      : status
 
   // ---------------------------------------------------------------- mouse
   if (mouse !== undefined) {
@@ -413,6 +415,7 @@ export function Composer({ bridge, files, state, width, frame, mouse }: Composer
         if (state.running && rows.length === 0 && room >= 2 && col >= width - 2 - stringWidth(right)) return { kind: 'interrupt' }
       }
       if (row === statusRow && status !== undefined && col >= modelSpan.from && col < modelSpan.to) return { kind: 'model' }
+      if (row === statusRow && status !== undefined && col >= agentModeSpan.from && col < agentModeSpan.to) return { kind: 'agentMode' }
       return undefined
     }
     const onMouse = (event: MouseEvent, row: number, col: number): boolean => {
@@ -434,6 +437,7 @@ export function Composer({ bridge, files, state, width, frame, mouse }: Composer
         case 'mode': bridge.cycleMode(); break
         case 'interrupt': bridge.interrupt(); break
         case 'model': void bridge.runSlash('/model'); break
+        case 'agentMode': void bridge.runSlash('/mode'); break
       }
       return true
     }

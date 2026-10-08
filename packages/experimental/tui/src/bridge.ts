@@ -25,6 +25,9 @@ import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import { scopeOf } from '@deepseek-ai/dsh-scope'
+import type { ToolSchema } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-fs'
 import type {} from '@deepseek-ai/dsh-goal'
@@ -44,6 +47,7 @@ import type { AskUserQuestionAnswer, AskUserQuestionItem } from '@deepseek-ai/ds
 import { DEMO_MODEL, DEMO_PROVIDER } from './demo/adapter.ts'
 import { expandMentions } from './files.ts'
 import { LOCAL_COMMANDS, type LocalCommand } from './local-commands.ts'
+import { DEFAULT_MODE, modeInfo, resolveModeId } from './modes.ts'
 import type { LogCapture } from './log-capture.ts'
 import type { Overlay, PickerOption, QuestionAnswer, QuestionSpec, Store, TodoEntry } from './store.ts'
 import { projectEvent } from './transcript.ts'
@@ -58,6 +62,8 @@ export interface BridgeOptions {
   readonly continue: boolean
   readonly model: string | undefined
   readonly permission: string | undefined
+  /** `--mode`: agent preset (id, label or alias) for new sessions. */
+  readonly mode?: string | undefined
   readonly prompt: string | undefined
   readonly logs: LogCapture
   readonly requestExit: (code: number) => void
@@ -141,6 +147,8 @@ export class Bridge {
   suspend: (() => Promise<void>) | undefined
   private themeChoice: ThemeChoice
   private historyFile: string
+  /** Agent preset new sessions bind; undefined when the registry is not mounted. */
+  private modeId: string | undefined
   readonly cwd: string
 
   constructor(private readonly ctx: Context, readonly store: Store, private readonly options: BridgeOptions) {
@@ -176,6 +184,7 @@ export class Bridge {
       draft.demo = route.provider === DEMO_PROVIDER
     })
     await this.refreshContextWindow()
+    await this.initialMode()
     let resumeId = this.options.resume
     if (resumeId === undefined && this.options.continue) resumeId = await this.latestSessionId()
     await this.refreshRecent()
@@ -228,14 +237,59 @@ export class Bridge {
     return undefined
   }
 
-  private setup = (agentCtx: Context): void => {
-    installModelSelection(agentCtx, this.selection)
+  /**
+   * Agent setup before publication: the model route, then the session's
+   * preset composition (tools, prompt sections, skills) when presets exist.
+   * @param presetId - preset to bind, undefined without a registry.
+   * @returns the setup callback for `agents.create` / `agents.resume`.
+   */
+  private setupFor(presetId: string | undefined): (agentCtx: Context) => Promise<void> {
+    return async (agentCtx: Context): Promise<void> => {
+      installModelSelection(agentCtx, this.selection)
+      const presets = this.ctx.get('agentPresets')
+      if (presets !== undefined && presetId !== undefined) await presets.mount(agentCtx, presetId)
+    }
   }
 
-  /** Start a fresh session (initial boot and /clear). */
-  async newSession(): Promise<void> {
+  /** Resolve `--mode` against the registry; an unusable request falls back to the default with a notice. */
+  private async initialMode(): Promise<void> {
+    const presets = this.ctx.get('agentPresets')
+    if (presets === undefined) return
+    const requested = this.options.mode
+    const known = (await presets.list()).map(row => row.id)
+    const id = requested === undefined ? presets.defaultId : resolveModeId(requested, known)
+    if (id === undefined) {
+      this.notice('warn', `Unknown mode "${requested ?? ''}" · using ${modeInfo(presets.defaultId).label}`, `Modes: ${known.join(', ')}`)
+      this.modeId = presets.defaultId
+      return
+    }
+    this.modeId = id
+  }
+
+  /**
+   * Resolve the preset a new session binds, refusing a broken definition.
+   * @param wanted - preset id, or undefined for the current mode.
+   * @returns the usable preset id, or undefined without a registry.
+   */
+  private async usablePreset(wanted: string | undefined): Promise<string | undefined> {
+    const presets = this.ctx.get('agentPresets')
+    if (presets === undefined) return undefined
+    const id = wanted ?? this.modeId ?? presets.defaultId
+    const resolved = await presets.resolve(id)
+    if (resolved.broken !== undefined) {
+      const fallback = id === DEFAULT_MODE ? undefined : await presets.resolve(DEFAULT_MODE).catch(() => undefined)
+      this.notice('error', `${modeInfo(id).label} mode cannot start: ${resolved.broken.split('\n')[0] ?? ''}`, resolved.broken)
+      if (fallback === undefined || fallback.broken !== undefined) throw new Error(`agent preset ${id} is unusable: ${resolved.broken}`)
+      return fallback.id
+    }
+    return resolved.id
+  }
+
+  /** Start a fresh session (initial boot, /clear and /mode). */
+  async newSession(mode?: string): Promise<void> {
     const agents = this.ctx.get('agents')
     if (agents === undefined) throw new Error('the agents service is not mounted')
+    const presetId = await this.usablePreset(mode)
     const previous = this.handle
     this.handle = undefined
     if (previous !== undefined) {
@@ -246,7 +300,7 @@ export class Bridge {
     const route = this.selection.current
     this.handle = await agents.create({
       sessionId,
-      meta: { cwd: this.cwd },
+      meta: { cwd: this.cwd, ...presetId === undefined ? {} : { agentPreset: presetId } },
       ...route === undefined ? {} : {
         agentOptions: {
           provider: route.provider,
@@ -254,9 +308,10 @@ export class Bridge {
           ...route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort },
         },
       },
-      setup: this.setup,
+      setup: this.setupFor(presetId),
     })
     this.agent = this.handle.agent
+    if (presetId !== undefined) this.modeId = presetId
     this.denied.clear()
     this.childToTool.clear()
     this.store.update((draft) => {
@@ -268,8 +323,22 @@ export class Bridge {
       draft.running = false
       draft.live = undefined
       draft.queued = []
+      draft.agentMode = presetId
+      draft.autoConfirmed = false
     })
     this.refreshModes()
+  }
+
+  /** The preset a persisted session ran with, read from its `agentPreset` projection. */
+  private async storedPreset(id: string): Promise<string | undefined> {
+    const query = this.ctx.get('sessionQuery')
+    if (query === undefined || this.ctx.get('agentPresets') === undefined) return undefined
+    const observation = await query.observeSession(brandString<SessionId>(id))
+    try {
+      return observation.projections?.values.agentPreset ?? undefined
+    } finally {
+      observation[Symbol.dispose]()
+    }
   }
 
   /** Resume a persisted session and replay its transcript. */
@@ -283,11 +352,16 @@ export class Bridge {
       await previous.dispose().catch(() => undefined)
     }
     const route = this.selection.current
+    let presetId: string | undefined
     try {
+      // A session keeps the composition it was created with; one from before
+      // presets resolves to the registry default, as on the Web surface.
+      const presets = this.ctx.get('agentPresets')
+      presetId = presets === undefined ? undefined : (await presets.resolve(await this.storedPreset(id))).id
       this.handle = await agents.resume({
         resumeSessionId: brandString<SessionId>(id),
         ...route === undefined ? {} : { agentOptions: { provider: route.provider, model: route.model } },
-        setup: this.setup,
+        setup: this.setupFor(presetId),
       })
     } catch (error: unknown) {
       this.notice('error', `Could not resume ${id}: ${error instanceof Error ? error.message : String(error)}`)
@@ -295,8 +369,11 @@ export class Bridge {
       return
     }
     this.agent = this.handle.agent
+    if (presetId !== undefined) this.modeId = presetId
     this.store.update((draft) => {
       draft.sessionId = id
+      draft.agentMode = presetId
+      draft.autoConfirmed = false
       draft.running = false
       draft.live = undefined
       draft.todos = []
@@ -960,9 +1037,74 @@ export class Bridge {
     return true
   }
 
-  setPlan(active: boolean): void {
-    const service = this.ctx.get('planMode')
+  /**
+   * A service as the current session sees it: from its preset's isolated
+   * composition first (plan mode, skills, terminals live there), else the host.
+   * @param name - Cordis service name.
+   * @returns the service, or undefined when neither provides it.
+   */
+  service<K extends string & keyof Context>(name: K): Context[K] | undefined {
     const agent = this.agent
+    const scoped = agent === undefined ? undefined : this.ctx.get('agentPresets')?.serviceFor(agent, name)
+    return scoped ?? this.ctx.get(name)
+  }
+
+  /** Tool schemas visible to the current session (its preset scope included). */
+  toolSchemas(): ToolSchema[] {
+    const tools = this.ctx.get('tools')
+    const agent = this.agent
+    if (tools === undefined) return []
+    return tools.schemas(agent === undefined ? undefined : scopeOf(agent.ctx))
+  }
+
+  /** Whether the current session's mode composes plan mode at all. */
+  hasPlanMode(): boolean {
+    return this.service('planMode') !== undefined
+  }
+
+  /** Agent modes the registry declares, with the current one marked. */
+  async modes(): Promise<{ id: string; label: string; description: string; broken?: string; current: boolean }[]> {
+    const presets = this.ctx.get('agentPresets')
+    if (presets === undefined) return []
+    const current = this.store.get().agentMode
+    return (await presets.list()).map((row) => {
+      const info = modeInfo(row.id)
+      return {
+        id: row.id, label: info.label, description: row.description ?? info.description,
+        ...row.broken === undefined ? {} : { broken: row.broken }, current: row.id === current,
+      }
+    })
+  }
+
+  /**
+   * Switch agent mode. The composition is fixed per session, so this starts
+   * a new session in that mode; the current one stays resumable.
+   * @param input - preset id, label or alias.
+   * @returns the preset id switched to.
+   */
+  async switchMode(input: string): Promise<string> {
+    const presets = this.ctx.get('agentPresets')
+    if (presets === undefined) throw new Error('Agent modes need the agent preset registry (it is part of the TUI bundle).')
+    const known = (await presets.list()).map(row => row.id)
+    const id = resolveModeId(input, known)
+    if (id === undefined) throw new Error(`Unknown mode "${input}". Modes: ${known.map(entry => `${entry} (${modeInfo(entry).label})`).join(', ')}`)
+    if (this.agent?.status === 'running') this.agent.cancel({ kind: 'user' })
+    const permission = this.store.get().preset
+    await this.newSession(id)
+    // Permission policy is the user's, not the mode's: carry it over.
+    if (permission !== 'auto' && this.presets().some(option => option.value === permission)) this.setPreset(permission)
+    await this.refreshRecent()
+    this.reprint(false)
+    return id
+  }
+
+  setPlan(active: boolean): void {
+    const service = this.service('planMode')
+    const agent = this.agent
+    if (agent !== undefined && service === undefined) {
+      if (active) this.toast(`${modeInfo(this.store.get().agentMode ?? '').label} mode has no plan mode · /mode standard`, 'warn')
+      return
+    }
     if (service === undefined || agent === undefined) return
     const outcome = service.set(agent, active)
     this.store.update((draft) => {
@@ -983,12 +1125,19 @@ export class Bridge {
    */
   cycleMode(): void {
     const state = this.store.get()
+    // Auto review is experimental and needs its one-time risk confirmation in /permissions.
     const available = this.presets().map(option => option.value).filter(value => value !== 'auto')
     const preferred = ['workspace-write', 'danger-full-access', 'read-only']
     const order = [...preferred.filter(value => available.includes(value)), ...available.filter(value => !preferred.includes(value))]
     const base = order[0]
     if (base === undefined) {
       this.setPlan(!state.planActive)
+      return
+    }
+    if (!this.hasPlanMode()) {
+      // Minimal mode composes no plan mode: Shift+Tab cycles the presets only.
+      const index = order.indexOf(state.preset)
+      this.setPreset(order[(index + 1) % order.length] ?? base)
       return
     }
     if (state.planActive) {
@@ -1010,7 +1159,7 @@ export class Bridge {
     const agent = this.agent
     if (agent === undefined) return
     const presets = this.ctx.get('permissionPresets')
-    const plan = this.ctx.get('planMode')?.get(agent)
+    const plan = this.service('planMode')?.get(agent)
     const approval = this.ctx.get('approval')
     const preset = presets?.current(agent.session)
     const option = preset === undefined ? undefined : this.presets().find(entry => entry.value === preset)
@@ -1020,7 +1169,11 @@ export class Bridge {
       if (plan !== undefined) {
         draft.planActive = plan.active
         draft.planPending = plan.pending === true
+      } else {
+        draft.planActive = false
+        draft.planPending = false
       }
+      draft.hasPlanMode = plan !== undefined
       if (approval !== undefined) draft.approvalPolicy = approval.overrideOf(agent.session) ?? approval.config.policy ?? 'ask'
     })
   }

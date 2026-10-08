@@ -6,6 +6,7 @@
 
 import stringWidth from '../width.ts'
 import { formatElapsed, formatTokens, tildify } from '../format.ts'
+import { modeInfo } from '../modes.ts'
 import type { UiState } from '../store.ts'
 import { ansi, glyph, palette, spinnerFrames, themed, workingVerbs } from '../theme.ts'
 
@@ -23,6 +24,9 @@ const c = themed(() => ({
 /** Left footer hint for the current permission or plan mode. */
 export function modeHint(state: UiState): string {
   const cycle = c.faint(' (shift+tab to cycle)')
+  if (state.preset === 'auto') {
+    return c.warning(`${glyph.arrowRight} auto review`) + c.warning(' ᴱˣᴾ') + c.faint(' · the model reviews each call') + cycle
+  }
   if (state.planActive) return c.plan(`${glyph.pause} plan mode on`) + cycle
   if (state.planPending) return c.plan(`${glyph.pause} plan mode queued · applies after this turn`)
   const label = state.presetLabel.toLowerCase()
@@ -42,6 +46,33 @@ function meter(fraction: number, cells: number): string {
   const filled = Math.round(Math.max(0, Math.min(1, fraction)) * cells)
   const color = fraction > 0.85 ? c.warning : fraction > 0.6 ? c.muted : c.accent
   return color('▰'.repeat(filled)) + c.faint('▱'.repeat(cells - filled))
+}
+
+/** Plain text of the agent-mode badge, or '' when presets are not composed. */
+export function modeBadgeText(state: UiState): string {
+  if (state.agentMode === undefined) return ''
+  return `${modeGlyph(state.agentMode)} ${modeInfo(state.agentMode).label}`
+}
+
+function modeGlyph(id: string): string {
+  switch (id) {
+    case 'ptc': return '{}'
+    case 'minimal': return '$'
+    case 'cordis': return '✦'
+    default: return '◇'
+  }
+}
+
+/** The coloured agent-mode badge that leads the status line. */
+function modeBadge(state: UiState): string {
+  const text = modeBadgeText(state)
+  if (text === '') return ''
+  switch (state.agentMode) {
+    case 'standard': return c.muted(text)
+    case 'ptc': return ansi.bold(c.accent(text))
+    case 'cordis': return ansi.bold(c.plan(text))
+    default: return ansi.bold(c.text(text))
+  }
 }
 
 /**
@@ -66,15 +97,24 @@ export function statusLine(state: UiState, width: number): string {
   if (state.jobs > 0) extras.push(c.muted(`${String(state.jobs)} job${state.jobs === 1 ? '' : 's'}`))
   if (state.problems > 0) extras.push(c.warning(`${String(state.problems)} log warning${state.problems === 1 ? '' : 's'} · /logs`))
   // Mouse capture being off changes how the screen behaves, so it outranks the rest.
-  const parts = [model, ctx, ...state.mouseOff ? [c.muted('○ mouse off · /mouse on')] : [], tokens, cwd, ...extras]
+  const badge = modeBadge(state)
+  const parts = [...badge === '' ? [] : [badge], model, ctx, ...state.mouseOff ? [c.muted('○ mouse off · /mouse on')] : [], tokens, cwd, ...extras]
   while (parts.length > 1 && stringWidth(`  ${parts.join(sep)}`) > width) parts.pop()
   return `  ${parts.join(sep)}`
 }
 
-/** Columns of the clickable model segment at the start of {@link statusLine}. */
+/** Columns of the clickable agent-mode badge at the start of {@link statusLine}. */
+export function statusModeSpan(state: UiState): { from: number; to: number } {
+  const badge = modeBadgeText(state)
+  return { from: 2, to: 2 + stringWidth(badge) }
+}
+
+/** Columns of the clickable model segment in {@link statusLine} (after the mode badge). */
 export function statusModelSpan(state: UiState): { from: number; to: number } {
   const label = state.model.model + (state.model.effort === undefined ? '' : ` ${state.model.effort}`) + (state.demo ? ' demo' : '')
-  return { from: 2, to: 2 + stringWidth(label) }
+  const badge = modeBadgeText(state)
+  const from = 2 + (badge === '' ? 0 : stringWidth(badge) + 5)
+  return { from, to: from + stringWidth(label) }
 }
 
 /** Shimmer: a soft highlight sweeping across the text. */

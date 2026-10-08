@@ -30,6 +30,8 @@ export interface TuiStartupValues {
   model: string | undefined
   /** Starting permission preset. */
   permission: string | undefined
+  /** Agent mode (agent preset id or alias) for new sessions. */
+  mode: string | undefined
   /** Optional first prompt submitted right after the banner. */
   prompt: string | undefined
   /** Fullscreen with mouse support (true), classic inline (false), or auto (undefined). */
@@ -58,6 +60,7 @@ export function tuiCommand(): Command {
     .option('-c, --continue', 'resume the most recent session in this directory')
     .option('-m, --model <route>', 'starting model, as provider/model or a model id')
     .option('-p, --permission <preset>', 'starting permission preset, e.g. workspace-write')
+    .option('--mode <mode>', 'agent mode for new sessions: standard, ptc, minimal, or creator')
     .option('--mouse', 'fullscreen UI with mouse support (default, except under Zellij)')
     .option('--no-mouse', 'classic inline UI: native scrollback and selection, no mouse capture')
     .option('--theme <theme>', 'colour theme: auto (detect the terminal background), dark, or light')
@@ -67,6 +70,7 @@ Examples:
   dsh tui                         start a session in the current directory
   dsh tui --demo                  try every feature with the scripted demo model
   dsh tui -c                      continue the latest session here
+  dsh tui --mode ptc              let the model call tools from TypeScript programs
   dsh tui "explain this repo"     start with a first prompt
   dsh tui --no-mouse              keep the terminal's own scrollback and selection
 `)
@@ -85,6 +89,7 @@ export function apply(ctx: Context): void {
       continue?: boolean
       model?: string
       permission?: string
+      mode?: string
       mouse?: boolean
       theme?: string
     }>()
@@ -96,6 +101,7 @@ export function apply(ctx: Context): void {
       continue: options.continue === true,
       model: options.model,
       permission: options.permission,
+      mode: options.mode ?? (process.env.DSH_TUI_MODE === undefined || process.env.DSH_TUI_MODE === '' ? undefined : process.env.DSH_TUI_MODE),
       prompt: prompt === '' ? undefined : prompt,
       mouse: options.mouse ?? (envMouse === '0' ? false : envMouse === '1' ? true : undefined),
       theme: options.theme,

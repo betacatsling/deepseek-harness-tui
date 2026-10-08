@@ -125,6 +125,7 @@ export function renderBanner(state: UiState, width: number): string[] {
     c.text('Ask anything, or try ') + c.bold('/init') + c.text(' for AGENTS.md'),
     c.text('Use ') + c.bold('@') + c.text(' to attach files, ') + c.bold('!') + c.text(' for shell'),
     c.bold('shift+tab') + c.text(' cycles permission & plan mode'),
+    c.bold('/mode') + c.text(clipText(' switches agent mode (PTC, minimal…)', Math.max(8, rightWidth - 5))),
     c.faint('─'.repeat(Math.min(rightWidth, 40))),
     c.accent('Recent activity'),
     ...recent.length === 0
@@ -226,15 +227,82 @@ export function renderDiff(diff: readonly DiffLine[], width: number, path: strin
   return rows
 }
 
-function renderChildren(children: readonly ChildStep[], width: number, detail: boolean): string[] {
-  const shown = detail ? children : children.slice(-3)
+function renderChildren(children: readonly ChildStep[], width: number, detail: boolean, noun = 'tool use', keep = 3): string[] {
+  const shown = detail ? children : children.slice(-keep)
   const hidden = children.length - shown.length
   const lines = shown.map((child) => {
     const mark = child.status === 'running' ? c.muted('…') : child.status === 'error' ? c.error(glyph.cross) : c.success(glyph.check)
     return `${mark} ${c.muted(clipText(child.label, width - 10))}`
   })
-  if (hidden > 0) lines.unshift(c.faint(`+${String(hidden)} more tool use${hidden === 1 ? '' : 's'}`))
+  if (hidden > 0) lines.unshift(c.faint(`+${String(hidden)} more ${noun}${hidden === 1 ? '' : 's'}`))
   return lines
+}
+
+/** Syntax-highlighted program listing in a quiet frame, line numbers in the gutter. */
+export function renderProgramCode(code: string, width: number, limit: number, opts?: { readonly hint?: 'keyboard' | 'click' }): string[] {
+  const source = code.replace(/\s+$/, '').split('\n')
+  const painted = highlightCode(source.join('\n'), 'typescript')
+  const gutter = String(source.length).length
+  const inner = width - 4
+  const shown = source.slice(0, limit)
+  const rows = shown.map((line, index) => {
+    const budget = inner - gutter - 2
+    const text = painted[index] ?? line
+    const visible = stringWidth(line) > budget ? `${wrapAnsi(text, budget - 1, { hard: true, trim: false }).split('\n')[0] ?? ''}${c.faint('…')}` : text
+    return `${c.faint(String(index + 1).padStart(gutter))}  ${visible}`
+  })
+  if (source.length > shown.length) rows.push(moreLine(source.length - shown.length, opts))
+  return boxed(rows, width, c.border, c.muted('TypeScript'))
+}
+
+/**
+ * A `run_code` call (PTC mode): the description as title, the program as a
+ * highlighted listing, and its nested tool calls folded underneath like
+ * subagent steps, each with its own live status.
+ */
+function renderProgram(item: Extract<Item, { kind: 'tool' }>, code: string, opts: RenderOptions): string[] {
+  const width = opts.width
+  const now = opts.now ?? Date.now()
+  const out = hang(`${statusBullet(item.status, opts.frame ?? 0)} `, '  ', wrap(c.bold(toolVerb(item.name)) + c.text(`(${toolArgument(item.name, item.args)})`), width - 2))
+  const running = item.status === 'running' || item.status === 'waiting'
+  const listing = renderProgramCode(code, width - 5, opts.detail ? 400 : running ? 12 : 6, opts)
+  const calls = item.children ?? []
+  const kids = calls.length > 0 ? renderChildren(calls, width - 5, opts.detail, 'call', running ? 4 : 3) : []
+  const count = `${String(calls.length)} call${calls.length === 1 ? '' : 's'}`
+  const lines = [...listing, ...kids]
+  switch (item.status) {
+    case 'running': {
+      const elapsed = now - item.startedAt
+      const active = calls.filter(call => call.status === 'running').length
+      lines.push(c.faint(`Running…${calls.length > 0 ? ` · ${count}${active > 1 ? `, ${String(active)} in parallel` : ''}` : ''}${elapsed > 2000 ? ` (${formatElapsed(elapsed)})` : ''}`))
+      break
+    }
+    case 'waiting':
+      lines.push(c.warning('Waiting for permission…'))
+      break
+    case 'denied':
+      lines.push(c.warning('Declined by user') + c.faint(' · DeepSeek was told not to run this'))
+      break
+    case 'cancelled':
+      lines.push(c.error('Interrupted'))
+      break
+    default: {
+      const summary = summarizeResult(item.name, item.args, item.result ?? '', item.status === 'error', 0)
+      const took = item.endedAt === undefined || item.endedAt - item.startedAt < 1000 ? '' : ` · ${formatElapsed(item.endedAt - item.startedAt)}`
+      const extra = (summary.body ?? '').split('\n').filter(Boolean)
+      if (item.status === 'error') {
+        lines.push(c.error(summary.headline) + c.faint(` (${count}${took})`))
+        const shown = opts.detail ? extra : extra.slice(0, 3)
+        lines.push(...shown.map(line => c.muted(clipText(line, width - 6))))
+        if (extra.length > shown.length) lines.push(moreLine(extra.length - shown.length, opts))
+      } else {
+        lines.push(c.text(summary.headline) + c.faint(` (${count}${took})`) + (opts.detail || extra.length === 0 ? '' : ` ${c.faint.italic(expandHint(opts))}`))
+        if (opts.detail) lines.push(...extra.map(line => c.muted(line)))
+      }
+    }
+  }
+  out.push(...elbow(lines, width, false))
+  return out
 }
 
 export function boxed(lines: readonly string[], width: number, color: (s: string) => string, title?: string): string[] {
@@ -257,6 +325,7 @@ function shellLine(line: string): string {
 
 /** Render one tool block. */
 export function renderTool(item: Extract<Item, { kind: 'tool' }>, opts: RenderOptions): string[] {
+  if (item.name === 'run_code' && typeof item.args.code === 'string') return renderProgram(item, item.args.code, opts)
   const width = opts.width
   const frame = opts.frame ?? 0
   const now = opts.now ?? Date.now()
@@ -328,7 +397,7 @@ export function renderTool(item: Extract<Item, { kind: 'tool' }>, opts: RenderOp
 
   const bodyLines = (summary.body ?? '').split('\n')
   while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] === '') bodyLines.pop()
-  const compactLimit = item.name === 'bash' || item.name === 'pwsh' ? 4 : item.name === 'subagent' ? 0 : ['glob', 'grep', 'read'].includes(item.name) ? 0 : 3
+  const compactLimit = item.name === 'bash' || item.name === 'pwsh' ? 4 : item.name === 'subagent' ? 0 : ['glob', 'grep', 'read', 'skill', 'plugin_manager', 'cordis_inspect_list'].includes(item.name) ? 0 : 3
   const limit = opts.detail ? 300 : compactLimit
   const shown = bodyLines.slice(0, limit)
   const quietBody = limit === 0 && bodyLines.some(Boolean)

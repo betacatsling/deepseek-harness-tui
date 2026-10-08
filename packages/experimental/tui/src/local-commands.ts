@@ -11,6 +11,8 @@ import { join } from 'node:path'
 import type { Bridge } from './bridge.ts'
 import { DEMO_PROVIDER } from './demo/adapter.ts'
 import { formatTokens } from './format.ts'
+import { modeInfo } from './modes.ts'
+import type { PickerOption } from './store.ts'
 import { ansi, palette } from './theme.ts'
 
 /** One local command. */
@@ -39,7 +41,7 @@ const KEYS = [
   ['Enter', 'send · while running, steer the current turn'],
   ['Shift+Enter / Ctrl+J', 'newline (or end a line with `\\`)'],
   ['Esc', 'interrupt the running turn · Esc Esc clears the input'],
-  ['Shift+Tab', 'cycle permission mode → plan mode'],
+  ['Shift+Tab', 'cycle permission mode → plan mode (the agent mode is `/mode`)'],
   ['↑ / ↓', 'prompt history · menu navigation'],
   ['Tab', 'accept completion'],
   ['@', 'mention a file (its content is attached)'],
@@ -55,6 +57,39 @@ const KEYS = [
   ['Mouse', 'wheel scrolls · drag selects and copies · double/triple-click selects a word/line · click a tool to expand it · click options and menu rows'],
   ['Shift+drag', 'native terminal selection while the mouse is captured (⌥+drag in iTerm2, fn+drag in Terminal.app) · or `/mouse off`'],
 ] as const
+
+/** Shown when Auto review is picked but its layer is not installed. */
+export const AUTO_REVIEW_HELP = [
+  '**Auto review** `EXP` is an optional, experimental layer: before each tool call (PTC inner calls included) the current model',
+  'reviews the action; allowed calls run with full access, denied ones ask you. It costs one extra model request per call.',
+  '',
+  'Install it into the TUI profile from this checkout, then restart:',
+  '',
+  '```sh',
+  'pnpm dsh plugin --profile tui add ./packages/experimental/auto-review',
+  '```',
+  '',
+  'Remove it with `pnpm dsh plugin --profile tui remove @deepseek-ai/dsh-experimental-auto-review`.',
+].join('\n')
+
+/**
+ * Ask once per session before enabling the experimental Auto review preset.
+ * @param bridge - the bridge.
+ * @returns whether the user accepted the risk.
+ */
+async function confirmAutoReview(bridge: Bridge): Promise<boolean> {
+  if (bridge.store.get().autoConfirmed) return true
+  const answer = await bridge.pick('Enable Auto review for this session?', [
+    {
+      label: 'Enable Auto review', value: 'yes', badge: 'EXP',
+      description: 'The reviewer may allow unsafe actions or deny useful ones · extra tokens',
+    },
+    { label: 'Cancel', value: 'no', description: 'Keep the current permission mode' },
+  ], 'Experimental · allowed calls run with full access (no sandbox) · asked once per session')
+  if (answer !== 'yes') return false
+  bridge.store.update((draft) => { draft.autoConfirmed = true })
+  return true
+}
 
 export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   {
@@ -145,30 +180,75 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
     },
   },
   {
+    name: 'mode',
+    aliases: ['modes', 'agent'],
+    hint: '[standard|ptc|minimal|creator]',
+    description: 'Agent mode (tools, prompt and skills); switching starts a new session',
+    async run(bridge, input, line) {
+      const modes = await bridge.modes()
+      if (modes.length === 0) {
+        bridge.commandOutput(line, false, 'Agent modes need the agent preset registry, which the TUI bundle composes. Is the profile using `@deepseek-ai/dsh-experimental-tui`?')
+        return
+      }
+      const choice = input !== '' ? input : await bridge.pick('Agent mode', modes.map(mode => ({
+        label: mode.label,
+        value: mode.id,
+        description: mode.broken === undefined ? mode.description : `Unavailable: ${mode.broken.split('\n')[0] ?? ''}`,
+        current: mode.current,
+        ...mode.broken === undefined ? {} : { badge: 'broken' },
+      })), 'A session keeps its mode · switching starts a new session (this one stays in /resume)')
+      if (choice === undefined) return
+      const current = bridge.store.get().agentMode
+      if (choice === current && input === '') return
+      const id = await bridge.switchMode(choice)
+      const info = modeInfo(id)
+      bridge.notice('info', `${info.label} mode · new session`, info.description)
+    },
+  },
+  {
     name: 'permissions',
-    aliases: ['mode'],
+    aliases: ['permission'],
+    hint: '[preset]',
     description: 'Pick a permission preset (sandbox + approval policy)',
     async run(bridge, input, line) {
       const presets = bridge.presets()
       const state = bridge.store.get()
+      const hasAuto = presets.some(preset => preset.value === 'auto')
+      const row = (preset: (typeof presets)[number]): PickerOption => ({
+        label: preset.value === 'auto' ? 'Auto review' : preset.name,
+        value: preset.value,
+        ...preset.value === 'auto'
+          ? { description: 'Experimental · the model reviews each tool call; allowed calls run with full access', badge: 'EXP' }
+          : preset.description === undefined ? {} : { description: preset.description },
+        current: !state.planActive && preset.value === state.preset,
+      })
+      // Shift+Tab's cycle first, then the opt-in experimental layer last.
       const choice = input !== '' ? input : await bridge.pick('Permission mode', [
-        ...presets.map(preset => ({
-          label: preset.name,
-          value: preset.value,
-          ...preset.description === undefined ? {} : { description: preset.description },
-          current: !state.planActive && preset.value === state.preset,
-        })),
-        { label: 'Plan mode', value: '__plan', description: 'Explore and present a plan for review before executing', current: state.planActive },
-      ], 'Shift+Tab cycles these from the prompt')
+        ...presets.filter(preset => preset.value !== 'auto').map(row),
+        ...bridge.hasPlanMode()
+          ? [{ label: 'Plan mode', value: '__plan', description: 'Explore and present a plan for review before executing', current: state.planActive }]
+          : [],
+        ...hasAuto
+          ? presets.filter(preset => preset.value === 'auto').map(row)
+          : [{ label: 'Auto review', value: '__auto-help', description: 'Not installed · experimental per-call model review; shows how to add it', badge: 'EXP' }],
+      ], 'Shift+Tab cycles these from the prompt (Auto review only from here)')
       if (choice === undefined) return
       if (choice === '__plan') {
         bridge.setPlan(true)
         bridge.commandOutput(line, true, 'Plan mode on')
         return
       }
+      if (choice === '__auto-help') {
+        bridge.commandOutput(line, true, AUTO_REVIEW_HELP, true)
+        return
+      }
+      if (choice === 'auto' && !await confirmAutoReview(bridge)) {
+        bridge.commandOutput(line, false, 'Auto review not enabled · permissions unchanged')
+        return
+      }
       if (state.planActive) bridge.setPlan(false)
       const ok = bridge.setPreset(choice)
-      bridge.commandOutput(line, ok, ok ? `Permission mode: **${bridge.store.get().presetLabel}**` : `Could not select ${choice}`, true)
+      bridge.commandOutput(line, ok, ok ? `Permission mode: **${choice === 'auto' ? 'Auto review' : bridge.store.get().presetLabel}**${choice === 'auto' ? ' `EXP`' : ''}` : `Could not select ${choice}`, true)
     },
   },
   {
@@ -234,6 +314,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
         `- **Session** \`${state.sessionId ?? '—'}\`${state.title === undefined ? '' : ` · ${state.title}`}`,
         `- **Directory** \`${state.cwd}\`${state.branch === undefined ? '' : ` (git: ${state.branch})`}`,
         `- **Model** \`${state.model.provider}/${state.model.model}\`${state.model.effort === undefined ? '' : ` · effort ${state.model.effort}`}${state.demo ? ' · scripted demo' : ''}`,
+        ...state.agentMode === undefined ? [] : [`- **Agent mode** ${modeInfo(state.agentMode).label} (\`${state.agentMode}\` preset) · \`/mode\` to switch`],
         `- **Permissions** ${state.presetLabel} · approval policy \`${state.approvalPolicy}\`${state.planActive ? ' · plan mode' : ''}`,
         `- **Goal** ${state.goal ?? 'none'}`,
         `- **Background jobs** ${String(state.jobs)} · **subagents running** ${String(state.activeSubagents)}`,
@@ -344,17 +425,21 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
     name: 'tools',
     description: 'List the tools the model can call',
     run(bridge, _input, line) {
-      const schemas = bridge.context().get('tools')?.schemas() ?? []
-      bridge.commandOutput(line, true, schemas.length === 0 ? 'No tools registered.' : schemas
-        .map(schema => `- \`${schema.name}\` — ${(schema.description.split(/(?<=\.)\s/)[0] ?? '').slice(0, 110)}`)
-        .join('\n'), true)
+      const schemas = bridge.toolSchemas()
+      const mode = bridge.store.get().agentMode
+      const ptc = mode === 'ptc' || process.env.DSH_TOOLS_MODE === 'ptc'
+      bridge.commandOutput(line, true, [
+        ...mode === undefined ? [] : [`**${modeInfo(mode).label} mode** · ${String(schemas.length)} tool${schemas.length === 1 ? '' : 's'}${ptc ? ' · the model sees only `run_code` and calls these from its programs' : ''}`, ''],
+        ...schemas.length === 0 ? ['No tools registered.'] : schemas
+          .map(schema => `- \`${schema.name}\` — ${(schema.description.trim().split('\n')[0]?.split(/(?<=\.)\s/)[0] ?? '').slice(0, 110)}`),
+      ].join('\n'), true)
     },
   },
   {
     name: 'skills',
     description: 'List available skills',
     async run(bridge, _input, line) {
-      const skills = await bridge.context().get('skills')?.list().catch(() => []) ?? []
+      const skills = await bridge.service('skills')?.list().catch(() => []) ?? []
       bridge.commandOutput(line, true, skills.length === 0
         ? 'No skills found. Add `SKILL.md` folders under `.agents/skills/` or `~/.dsh/skills/`.'
         : skills.map(skill => `- **${skill.name}** — ${skill.description}`).join('\n'), true)
@@ -404,7 +489,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
     name: 'mcp',
     description: 'MCP servers and tools',
     run(bridge, _input, line) {
-      const schemas = bridge.context().get('tools')?.schemas() ?? []
+      const schemas = bridge.toolSchemas()
       const mcp = schemas.filter(schema => schema.name.includes('__') || schema.name.includes('mcp'))
       bridge.commandOutput(line, true, [
         mcp.length === 0 ? 'No MCP tools are mounted.' : mcp.map(schema => `- \`${schema.name}\``).join('\n'),

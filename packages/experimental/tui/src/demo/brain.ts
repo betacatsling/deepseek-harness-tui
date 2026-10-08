@@ -10,6 +10,7 @@
  */
 
 import type { GenerateOptions, RequestMessage as Message } from '@deepseek-ai/dsh-llm'
+import { ptcProgram, splitProgramResult, toolSurface, type ToolSurface } from './surface.ts'
 
 /** One scripted tool call. */
 export interface DemoToolCall {
@@ -23,6 +24,8 @@ export interface DemoReply {
   readonly text?: string
   readonly toolCalls?: readonly DemoToolCall[]
   readonly delayMs?: number
+  /** UI label when PTC mode wraps this step's calls into one `run_code` program. */
+  readonly program?: string
 }
 
 /** A tool result observed since the last human prompt. */
@@ -74,20 +77,38 @@ export function readTurn(messages: readonly Message[]): Turn {
   const prompt = last < 0 ? '' : textOf(messages[last] as Message).replace(/\n*<attached-file[\s\S]*?<\/attached-file>/g, '').trim()
   const after = last < 0 ? [] : messages.slice(last + 1)
   const names = new Map<string, string>()
+  const programs = new Map<string, string>()
   const results: Observed[] = []
   let step = 0
   for (const message of after) {
     if (message.role === 'assistant') {
       step += 1
-      for (const block of message.content) if (block.type === 'tool-call') names.set(block.id, block.name)
+      for (const block of message.content) {
+        if (block.type !== 'tool-call') continue
+        names.set(block.id, block.name)
+        if (block.name === 'run_code') programs.set(block.id, programCode(block.arguments))
+      }
     } else if (message.role === 'tool') {
       const tool = message as Message & { toolCallId: string; isError?: boolean }
-      results.push({ name: names.get(tool.toolCallId) ?? '', text: textOf(message), isError: tool.isError === true })
+      const observed = { name: names.get(tool.toolCallId) ?? '', text: textOf(message), isError: tool.isError === true }
+      results.push(observed)
+      // A PTC program stands for the calls inside it: expose them by tool name too.
+      const code = programs.get(tool.toolCallId)
+      if (code !== undefined) results.push(...splitProgramResult(code, observed.text, observed.isError) ?? [])
     }
   }
   const runtime = [...messages].reverse().find(message => sourceKind(message) === 'runtime-context')
   const planMode = runtime !== undefined && /plan mode is active|plan:policy|in plan mode/i.test(JSON.stringify((runtime as { source?: unknown }).source ?? '') + textOf(runtime))
   return { prompt, step, results, planMode, ...goal === undefined ? {} : { goal } }
+}
+
+function programCode(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw) as { code?: unknown }
+    return typeof parsed.code === 'string' ? parsed.code : ''
+  } catch {
+    return ''
+  }
 }
 
 // ---------------------------------------------------------------- scenarios
@@ -153,15 +174,17 @@ function fix(turn: Turn): DemoReply {
     return {
       reasoning: 'A failing test. I will track this as a short checklist: reproduce, diagnose, fix, verify.',
       toolCalls: [todos('in_progress')],
+      program: 'Track the fix as a checklist',
     }
   }
   if (turn.step === 1) {
-    return { toolCalls: [{ name: 'bash', args: { description: 'Run the test suite', command: 'npm test --silent' } }] }
+    return { toolCalls: [{ name: 'bash', args: { description: 'Run the test suite', command: 'npm test --silent' } }], program: 'Run the test suite' }
   }
   if (turn.step === 2) {
     return {
       reasoning: 'The refill test fails: after 500 ms the bucket already allows a request. The refill math in the limiter is the suspect.',
       toolCalls: [todos('completed', 'in_progress'), { name: 'read', args: { file_path: 'src/limiter.js' } }],
+      program: 'Update the checklist and read the limiter',
     }
   }
   if (!edited && turn.step === 3) {
@@ -169,15 +192,16 @@ function fix(turn: Turn): DemoReply {
       reasoning: 'elapsed = now() - updatedAt is in milliseconds, but refillPerSecond is tokens per second. 500 ms × 1 token/s adds 500 tokens instead of 0.5. Convert to seconds first.',
       text: 'Found it — `elapsed` is measured in **milliseconds**, but `refillPerSecond` is a per-second rate, so every refill is 1000× too large.',
       toolCalls: [todos('completed', 'completed', 'in_progress'), { name: 'edit', args: { file_path: 'src/limiter.js', old_string: LIMITER_OLD, new_string: LIMITER_NEW } }],
+      program: 'Convert elapsed time to seconds',
     }
   }
   if (lastBash !== undefined && /✖|fail [1-9]|exit code: [1-9]/.test(lastBash.text) && turn.step >= 5) {
     return { text: 'The suite still fails after the change — the output above shows which assertion. I stopped here so you can take a look.' }
   }
   if (turn.step === 4 || (edited && turn.step < 5)) {
-    return { toolCalls: [todos('completed', 'completed', 'completed', 'in_progress'), { name: 'bash', args: { description: 'Re-run the tests', command: 'npm test --silent' } }] }
+    return { toolCalls: [todos('completed', 'completed', 'completed', 'in_progress'), { name: 'bash', args: { description: 'Re-run the tests', command: 'npm test --silent' } }], program: 'Re-run the tests' }
   }
-  if (turn.step === 5) return { toolCalls: [todos('completed', 'completed', 'completed', 'completed')] }
+  if (turn.step === 5) return { toolCalls: [todos('completed', 'completed', 'completed', 'completed')], program: 'Close the checklist' }
   return {
     text: [
       'Fixed. `refill()` treated milliseconds as seconds, so a bucket refilled **1000× faster** than configured — after 500 ms it was already full again.',
@@ -240,6 +264,24 @@ function redisPlan(turn: Turn): DemoReply {
   const clientName = client.replace(/\s*\(Recommended\)/, '')
   const outageName = outage.replace(/\s*\(Recommended\)/, '').toLowerCase()
   const approved = review !== undefined && !review.isError
+  // A program can only call tools its mode offers, and exit_plan_mode is
+  // plan-mode-only — so in PTC the plan is delivered as the program's value.
+  if (turn.results.some(result => result.name === 'run_code')) {
+    return {
+      text: [
+        '# Redis-backed rate limit store',
+        '',
+        `Share token buckets across instances through **${clientName}**; ${outageName} when Redis is unavailable.`,
+        '',
+        '1. Extract a `Store` interface (`get`, `set`) from the in-memory `Map` in `src/limiter.js`',
+        `2. Add \`src/stores/redis.js\`: refill and take atomically in one Lua script via ${clientName}`,
+        `3. Wrap store calls so a Redis error ${outageName === 'fail open' ? 'allows the request and logs a warning' : 'returns 503'}`,
+        '4. Tests: run the existing suite against both stores; add an outage test',
+        '',
+        'In PTC mode `exit_plan_mode` is plan-mode-only, so the plan comes back as the program result instead of the review card. Switch to `/mode standard` for the full plan-mode review.',
+      ].join('\n'),
+    }
+  }
   if (review === undefined || (review.isError && /keep planning/i.test(review.text) && turn.step < 6)) {
     const feedback = review === undefined ? '' : /feedback: ([\s\S]*)$/.exec(review.text)?.[1] ?? ''
     return {
@@ -352,6 +394,209 @@ function reviewWorker(turn: Turn): DemoReply {
   }
 }
 
+// ---------------------------------------------------------------- auto review
+
+/**
+ * Stand-in reviewer for the experimental Auto review layer: it answers with
+ * the layer's exact decision objects. Project-local work is low risk;
+ * network lookups are medium and allowed (the user asked for them);
+ * destructive or publishing commands are denied so the approval fallback
+ * can be shown.
+ */
+export function autoReview(request: string): string {
+  const action = request.slice(request.lastIndexOf('PENDING_ACTION'))
+  if (/rm -rf|git push|--force|drop table|curl [^|]*\| *(sh|bash)/i.test(action)) {
+    return '{"risk":"medium","decision":"deny","reason":"Destructive or publishing command without explicit authorization in this session."}'
+  }
+  if (/npm view|npm install|curl |wget |danger-full-access/i.test(action)) return '{"risk":"medium","decision":"allow"}'
+  return '{"risk":"low","decision":"allow"}'
+}
+
+// ---------------------------------------------------------------- mode showcases
+
+const SURVEY_PATTERN = '{src,test}/**/*.js'
+
+/** The PTC program for the survey: one glob, every read in parallel, numbers only. */
+const SURVEY_PROGRAM = [
+  '// Read every source and test file at once; return only the numbers',
+  `const { paths } = await tools.glob({ pattern: '${SURVEY_PATTERN}' })`,
+  'const files = await Promise.all(paths.map(file_path => tools.read({ file_path })))',
+  'return files.map((file, i) => ({',
+  '  file: paths[i],',
+  '  lines: file.totalLines,',
+  '  exports: file.lines.filter(line => /^export /.test(line.text)).length,',
+  '  tests: file.lines.filter(line => /\\btest\\(/.test(line.text)).length,',
+  '}))',
+].join('\n')
+
+interface SurveyRow { readonly file: string; readonly lines: number; readonly exports: number; readonly tests: number }
+
+function surveyTable(rows: readonly SurveyRow[], footer: string): DemoReply {
+  const total = rows.reduce(
+    (sum, row) => ({ lines: sum.lines + row.lines, exports: sum.exports + row.exports, tests: sum.tests + row.tests }),
+    { lines: 0, exports: 0, tests: 0 },
+  )
+  return {
+    text: [
+      `${String(rows.length)} files, ${String(total.lines)} lines:`,
+      '',
+      '| File | Lines | Exports | Tests |',
+      '|---|--:|--:|--:|',
+      ...rows.map(row => `| \`${row.file}\` | ${String(row.lines)} | ${String(row.exports)} | ${String(row.tests)} |`),
+      `| **Total** | **${String(total.lines)}** | **${String(total.exports)}** | **${String(total.tests)}** |`,
+      '',
+      footer,
+    ].join('\n'),
+  }
+}
+
+/** Parse `read` output (`12: text` lines) into the survey numbers. */
+function surveyRow(file: string, text: string): SurveyRow {
+  const lines = text.split('\n').map(line => /^\s*\d+(?:: |:$|\t)(.*)$/.exec(line)?.[1] ?? (/^\s*\d+:$/.test(line) ? '' : undefined)).filter((line): line is string => line !== undefined)
+  return {
+    file,
+    lines: lines.length,
+    exports: lines.filter(line => /^export /.test(line)).length,
+    tests: lines.filter(line => /\btest\(/.test(line)).length,
+  }
+}
+
+/**
+ * Codebase survey. Natively it takes a glob step and a read step whose full
+ * file contents all land in the context; in PTC mode one program does the
+ * whole fan-out and returns only the table's numbers.
+ */
+function survey(turn: Turn, surface: ToolSurface): DemoReply {
+  if (surface === 'ptc') {
+    const program = turn.results.find(result => result.name === 'run_code')
+    if (program === undefined) {
+      return {
+        reasoning: 'One program can glob, read every file concurrently, and hand back just the counts, so the file bodies never enter my context.',
+        toolCalls: [{ name: 'run_code', args: { description: 'Count lines, exports and tests per file', code: SURVEY_PROGRAM } }],
+      }
+    }
+    try {
+      const rows = (JSON.parse(program.text.slice(program.text.indexOf('['))) as SurveyRow[]).sort((a, b) => a.file.localeCompare(b.file))
+      return surveyTable(rows, `One \`run_code\` program ran the glob and all ${String(rows.length)} reads in its own Node process; only these numbers came back into my context.`)
+    } catch {
+      return { text: `The survey program did not return the table I expected:\n\n\`\`\`\n${program.text.slice(0, 600)}\n\`\`\`` }
+    }
+  }
+  const listing = turn.results.find(result => result.name === 'glob')
+  if (listing === undefined) {
+    return {
+      reasoning: 'List the source and test files first, then read them all.',
+      toolCalls: [{ name: 'glob', args: { pattern: SURVEY_PATTERN } }],
+    }
+  }
+  const reads = turn.results.filter(result => result.name === 'read')
+  const files = listing.text.split('\n').map(line => line.trim()).filter(line => /\.js$/.test(line))
+  if (reads.length === 0) {
+    return { toolCalls: files.map(file => ({ name: 'read', args: { file_path: file } })) }
+  }
+  return surveyTable(files.map((file, index) => surveyRow(file, reads[index]?.text ?? '')).sort((a, b) => a.file.localeCompare(b.file)),
+    'Tip: in **PTC mode** (`/mode ptc`) one program does this fan-out and returns only the numbers.')
+}
+
+/** Creator mode: load the authoring skill, inspect the live composition, propose a mode. */
+function creator(turn: Turn): DemoReply {
+  const loaded = turn.results.some(result => result.name === 'skill')
+  const inspected = turn.results.some(result => result.name === 'cordis_inspect_list')
+  if (!loaded) {
+    return {
+      reasoning: 'A new mode is an agent preset. The editing-cordis-compositions skill has the rules for writing one, so load it before proposing anything.',
+      toolCalls: [{ name: 'skill', args: { name: 'editing-cordis-compositions' } }],
+    }
+  }
+  if (!inspected) {
+    return {
+      reasoning: 'Check what this profile already installs and which inspect providers the host exposes, so the proposal only uses rows that exist.',
+      toolCalls: [
+        { name: 'plugin_manager', args: { action: 'list_bundles' } },
+        { name: 'cordis_inspect_list', args: {} },
+      ],
+    }
+  }
+  return {
+    text: [
+      'Here is a **reviewer** mode as an agent preset: it reads and searches files, keeps a checklist, and has no shell.',
+      '',
+      '```yaml',
+      '- insert:',
+      '    - id: preset-reviewer',
+      "      name: '@deepseek-ai/dsh-agent-preset'",
+      '      config:',
+      '        id: reviewer',
+      '        plugins:',
+      '          - id: persona',
+      "            name: '@deepseek-ai/dsh-persona'",
+      '            config:',
+      '              prefix: You review code. Read and search; report findings, never edit.',
+      '          - id: agent-instructions',
+      "            name: '@deepseek-ai/dsh-agent-instructions'",
+      '          - id: tool-fs',
+      "            name: '@deepseek-ai/dsh-tool-fs'",
+      '          - id: tool-fs-search',
+      "            name: '@deepseek-ai/dsh-tool-fs-search'",
+      '          - id: tool-todo',
+      "            name: '@deepseek-ai/dsh-tool-todo'",
+      '```',
+      '',
+      '`tool-fs` also registers `write` and `edit`, so pair the mode with the **read-only** permission preset (`/permissions`) to block edits by policy, not just by the prompt.',
+      '',
+      'Say **install it** and I will package this as a bundle and add it to your profile with `plugin_manager` (you approve the install); it then appears in `/mode` as a custom mode.',
+    ].join('\n'),
+  }
+}
+
+const LIMITER_EDIT_SCRIPT = [
+  "node --input-type=module - <<'EOF'",
+  "import { readFileSync, writeFileSync } from 'node:fs'",
+  "const file = 'src/limiter.js'",
+  'const source = readFileSync(file, \'utf8\')',
+  "const fixed = source.replace('const elapsed = now() - bucket.updatedAt', 'const elapsedSeconds = (now() - bucket.updatedAt) / 1000')",
+  "  .replace('bucket.tokens + elapsed * refillPerSecond', 'bucket.tokens + elapsedSeconds * refillPerSecond')",
+  'writeFileSync(file, fixed)',
+  "console.log(fixed === source ? 'no change' : 'patched ' + file)",
+  'EOF',
+].join('\n')
+
+/** Minimal mode: one persistent shell, so every step is a command. */
+function minimal(turn: Turn, prompt: string): DemoReply {
+  const shell = turn.results.filter(result => result.name === 'bash')
+  if (/fail|fix|broken|bug/.test(prompt)) {
+    switch (turn.step) {
+      case 0: return { reasoning: 'Only a shell here. Reproduce first.', toolCalls: [{ name: 'bash', args: { command: 'npm test --silent' } }] }
+      case 1: return { reasoning: 'The refill test fails. Look at the refill math.', toolCalls: [{ name: 'bash', args: { command: "grep -n 'elapsed' src/limiter.js" } }] }
+      case 2: return {
+        reasoning: 'elapsed is in milliseconds but refillPerSecond is per second. Patch it with a small node script, since there is no edit tool.',
+        toolCalls: [{ name: 'bash', args: { command: LIMITER_EDIT_SCRIPT } }],
+      }
+      case 3: return { toolCalls: [{ name: 'bash', args: { command: 'npm test --silent && git diff --stat' } }] }
+      default: {
+        const last = shell.at(-1)?.text ?? ''
+        return {
+          text: /fail [1-9]|✖/.test(last)
+            ? 'The tests still fail after the patch; the output above shows the assertion.'
+            : 'Fixed with nothing but the shell: `elapsed` was milliseconds, so the bucket refilled 1000× too fast. All tests pass.',
+        }
+      }
+    }
+  }
+  if (/what does|explain|overview|walk me through/.test(prompt)) {
+    if (turn.step === 0) return { toolCalls: [{ name: 'bash', args: { command: 'ls src test && sed -n 1,20p README.md' } }] }
+    return { text: '**acme-api** is a small token-bucket rate limiter: `src/limiter.js` holds the buckets, `src/middleware.js` turns an empty bucket into a 429, and `test/` drives it with a fake clock.' }
+  }
+  if (turn.step > 0) return { text: 'Done.' }
+  return {
+    text: [
+      "**Minimal mode** — I only have one persistent shell and a one-line system prompt; it is for comparing a model's raw behavior.",
+      '',
+      'Try `@test/limiter.test.js is failing, please fix it` or `What does this project do?`, or switch with `/mode standard`.',
+    ].join('\n'),
+  }
+}
+
 const DESIGN_DOC = [
   '# Design: adaptive rate limits',
   '',
@@ -398,6 +643,7 @@ function fallback(): DemoReply {
       '- **Shift+Tab** into plan mode, then `Add a Redis-backed store`',
       '- `Review the middleware in a subagent`',
       '- `Write a design doc for adaptive limits` (press **Esc** to interrupt)',
+      '- `Survey the codebase` — then try it again in `/mode ptc`',
       '',
       'Or set `DEEPSEEK_API_KEY` and pick a real model with `/model`.',
     ].join('\n'),
@@ -422,12 +668,52 @@ function title(messages: readonly Message[]): DemoReply {
  */
 export function planReply(options: GenerateOptions): DemoReply {
   const messages = options.messages
+  if (options.system?.startsWith('REVIEW_POLICY') === true) {
+    const last = messages.at(-1)
+    return { text: autoReview(last === undefined ? '' : textOf(last)), delayMs: 250 }
+  }
   if (messages.some(message => sourceKind(message).includes('title'))) return title(messages)
   if ((options.tools?.length ?? 0) === 0) {
     return { text: 'Summary: the user is working on the acme-api rate limiter (token bucket + HTTP middleware) with the scripted demo model.', delayMs: 300 }
   }
+  const surface = toolSurface(options)
   const turn = readTurn(messages)
+  const reply = chooseReply(turn, surface, new Set((options.tools ?? []).map(tool => tool.name)))
+  return surface === 'ptc' ? asProgram(reply) : reply
+}
+
+/**
+ * PTC mode: one `run_code` program per scripted step, calling the same tools
+ * through the SDK. Steps that already are programs pass through.
+ */
+function asProgram(reply: DemoReply): DemoReply {
+  const calls = reply.toolCalls ?? []
+  if (calls.length === 0 || calls.every(call => call.name === 'run_code')) return reply
+  // Bookkeeping (the checklist) goes last so the program reads as the work.
+  const ordered = [...calls.filter(call => call.name !== 'todo_write'), ...calls.filter(call => call.name === 'todo_write')]
+  const label = reply.program ?? ordered.map(call => programLabel(call)).join(', then ')
+  return { ...reply, toolCalls: [{ name: 'run_code', args: ptcProgram(ordered, label) }] }
+}
+
+function programLabel(call: DemoToolCall): string {
+  const description = call.args.description
+  if (typeof description === 'string' && description !== '') return description
+  switch (call.name) {
+    case 'ask_user_question': return 'Ask which Redis client and outage policy to use'
+    case 'exit_plan_mode': return 'Present the plan for review'
+    case 'grep': return `Search for ${String(call.args.pattern)}`
+    case 'glob': return `List ${String(call.args.pattern)}`
+    case 'read': return `Read ${String(call.args.file_path)}`
+    case 'update_goal': return 'Mark the goal complete'
+    default: return call.name.replace(/_/g, ' ')
+  }
+}
+
+function chooseReply(turn: Turn, surface: ToolSurface, tools: ReadonlySet<string>): DemoReply {
   const prompt = turn.prompt.toLowerCase()
+  if (surface === 'minimal') return minimal(turn, prompt)
+  if (tools.has('cordis_inspect_list') && /\b(mode|preset|plugin|extend|customi[sz]e|creat)/.test(prompt)) return creator(turn)
+  if (/survey|stats|statistics|per file|how big|count (the )?(lines|tests|exports)/.test(prompt)) return survey(turn, surface)
   if (turn.goal !== undefined) return goalRound(turn, turn.goal)
   if (prompt.startsWith('review src/middleware.js')) return reviewWorker(turn)
   if (/what does|explain|overview|walk me through/.test(prompt)) return explain(turn)

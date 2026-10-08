@@ -35,7 +35,9 @@ const VERBS: Record<string, string> = {
   create_goal: 'Set Goal',
   get_goal: 'Goal',
   update_goal: 'Update Goal',
-  run_code: 'Run Code',
+  run_code: 'Program',
+  cordis_inspect_list: 'Inspect',
+  cordis_inspect_query: 'Inspect',
   workflow: 'Workflow',
   schedule_create: 'Schedule',
   schedule_list: 'Schedules',
@@ -70,8 +72,12 @@ function clip(text: string, max: number): string {
 export function toolArgument(name: string, args: Record<string, unknown>): string {
   switch (name) {
     case 'bash':
-    case 'pwsh':
-      return clip(str(args.command) ?? '', 160)
+    case 'pwsh': {
+      // Heredocs and scripts: the first line names the command; the rest is its body.
+      const lines = (str(args.command) ?? '').trim().split('\n')
+      const rest = lines.length - 1
+      return rest > 0 ? `${clip(lines[0] ?? '', 120)} … +${String(rest)} line${rest === 1 ? '' : 's'}` : clip(lines[0] ?? '', 160)
+    }
     case 'glob':
       return `pattern: "${str(args.pattern) ?? str(args.glob) ?? '*'}"${str(args.path) !== undefined ? `, path: "${String(args.path)}"` : ''}`
     case 'grep':
@@ -86,6 +92,12 @@ export function toolArgument(name: string, args: Record<string, unknown>): strin
       return clip(str(args.description) ?? str(args.name) ?? str(args.task) ?? str(args.prompt) ?? '', 80)
     case 'skill':
       return str(args.name) ?? str(args.skill) ?? ''
+    case 'run_code':
+      return clip(str(args.description) ?? 'program', 80)
+    case 'plugin_manager':
+      return [str(args.action), str(args.name) ?? str(args.bundle) ?? str(args.plugin)].filter(Boolean).join(' ')
+    case 'cordis_inspect_query':
+      return clip(str(args.provider) ?? str(args.target) ?? str(args.query) ?? '', 60)
     case 'update_goal':
       return str(args.action) ?? ''
     case 'ask_user_question': {
@@ -263,7 +275,8 @@ export function summarizeResult(
     }
     case 'bash':
     case 'pwsh': {
-      const output = bashOutput(json, result)
+      // The persistent shell appends a status line; only a failure is news.
+      const output = bashOutput(json, result).replace(/\n*\[Command finished with exit code 0\]\s*$/, '')
       return { headline: output.trim() === '' ? '(no output)' : '', body: output.replace(/\n+$/, '') }
     }
     case 'todo_write': {
@@ -278,6 +291,29 @@ export function summarizeResult(
       return { headline: `Fetched ${String(result.length)} characters` }
     case 'subagent':
       return { headline: 'Done', body: clip(result, 600) }
+    case 'run_code':
+      return { headline: programHeadline(result), body: result.replace(/\n+$/, '') }
+    case 'plugin_manager': {
+      const record = json !== undefined && !Array.isArray(json) ? json : undefined
+      type Entry = { name?: unknown }
+      const entries = Array.isArray(record?.entries) ? record.entries as Entry[] : Array.isArray(json) ? json as Entry[] : undefined
+      if (entries === undefined) break
+      const noun = str(args.action)?.includes('bundle') === true ? 'bundle' : 'plugin'
+      const names = entries.map(entry => str(entry.name) ?? '').filter(Boolean)
+      return { headline: `${String(entries.length)} ${noun}${entries.length === 1 ? '' : 's'}`, body: names.join('\n') }
+    }
+    case 'cordis_inspect_list': {
+      const record = json !== undefined && !Array.isArray(json) ? json : undefined
+      const providers = Array.isArray(record?.providers) ? record.providers as Record<string, unknown>[] : undefined
+      if (providers === undefined) break
+      const platforms = [...new Set(providers.map(provider => str(provider.platform) ?? 'unknown'))]
+      const names = providers.map(provider => [str(provider.platform), str(provider.name) ?? str(provider.id) ?? str(provider.kind)].filter(Boolean).join(' · '))
+      return { headline: `${String(providers.length)} inspect provider${providers.length === 1 ? '' : 's'} · ${platforms.join(', ')}`, body: names.join('\n') }
+    }
+    case 'skill': {
+      const name = str(args.name) ?? str(args.skill) ?? 'skill'
+      return { headline: `Loaded ${name} · ${String(countLines(result))} lines`, body: result }
+    }
     case 'get_goal':
     case 'create_goal':
     case 'update_goal':
@@ -286,11 +322,39 @@ export function summarizeResult(
       return { headline: summarizeAnswers(json) }
     case 'exit_plan_mode':
       return { headline: /approv/i.test(result) ? 'User approved the plan' : clip(result.split('\n')[0] ?? '', 160) }
-    default: {
-      const first = clip(result.split('\n')[0] ?? '', 160)
-      return { headline: first === '' ? 'Done' : first, body: result.split('\n').slice(1).join('\n') }
-    }
+    default:
+      break
   }
+  const first = clip(result.split('\n')[0] ?? '', 160)
+  return { headline: first === '' ? 'Done' : first, body: result.split('\n').slice(1).join('\n') }
+}
+
+/**
+ * The value a `run_code` program returned: its result text is the captured
+ * console output followed by the return value as 2-space JSON.
+ */
+export function programValue(result: string): { readonly logs: string; readonly value?: unknown } {
+  const whole = tryJson(result)
+  if (whole !== undefined) return { logs: '', value: whole }
+  const start = result.search(/\n[[{]/)
+  if (start >= 0) {
+    const tail = tryJson(result.slice(start + 1))
+    if (tail !== undefined) return { logs: result.slice(0, start), value: tail }
+  }
+  return { logs: result }
+}
+
+/** `Returned 5 rows` / `Returned { fixed, tests }` / the first log line. */
+export function programHeadline(result: string): string {
+  const { logs, value } = programValue(result)
+  if (Array.isArray(value)) return `Returned ${String(value.length)} row${value.length === 1 ? '' : 's'}`
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value)
+    return keys.length === 0 ? 'Returned {}' : `Returned { ${clip(keys.join(', '), 80)} }`
+  }
+  if (value !== undefined) return `Returned ${clip(JSON.stringify(value), 80)}`
+  const first = logs.split('\n').find(line => line.trim() !== '')
+  return first === undefined ? 'Done' : clip(first, 160)
 }
 
 function summarizeGoal(json: unknown): string {

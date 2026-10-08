@@ -144,6 +144,12 @@ export interface UiState {
   approvalPolicy: string
   planActive: boolean
   planPending: boolean
+  /** Whether the session's agent mode composes plan mode (Minimal does not). */
+  hasPlanMode: boolean
+  /** Agent preset the session runs (see modes.ts); undefined without presets. */
+  agentMode: string | undefined
+  /** Session's risk confirmation for the experimental Auto review preset. */
+  autoConfirmed: boolean
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number }
   pressure: number | undefined
   todos: readonly TodoEntry[]
@@ -266,6 +272,9 @@ export function initialState(version: string, cwd: string): UiState {
     approvalPolicy: 'ask',
     planActive: false,
     planPending: false,
+    hasPlanMode: true,
+    agentMode: undefined,
+    autoConfirmed: false,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     pressure: undefined,
     todos: [],

@@ -19,6 +19,8 @@
     { "path": "../../core/session" },
     { "path": "../../core/agent" },
     { "path": "../../core/agent-default-model" },
+    { "path": "../../core/scope" },
+    { "path": "../../preset/agent-preset-registry" },
     { "path": "../../interaction/commands" },
     { "path": "../../interaction/permission-presets" },
     { "path": "../../interaction/user-approval" },

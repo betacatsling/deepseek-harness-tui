@@ -19,6 +19,7 @@ exports[`transcript rendering > renders the whale in the welcome banner at 80 co
 │ Ask anything, or try /init for AGENTS.md                                     │
 │ Use @ to attach files, ! for shell                                           │
 │ shift+tab cycles permission & plan mode                                      │
+│ /mode switches agent mode (PTC, minimal…)                                    │
 │ ────────────────────────────────────────                                     │
 │ Recent activity                                                              │
 │ Explain acme-api · 2m ago                                                    │
@@ -33,11 +34,11 @@ exports[`transcript rendering > renders the whale in the welcome banner at 100 c
 │                                        │ Ask anything, or try /init for AGENTS.md                │
 │       ▄▄▄  ▄▄▄       ▄▄▄▄▄▄▄           │ Use @ to attach files, ! for shell                      │
 │        ▀█▄▄█▀    ▄████████████▄        │ shift+tab cycles permission & plan mode                 │
-│          ▀█▄   ▄████████████▀███       │ ────────────────────────────────────────                │
-│            ▀███████████████████▀       │ Recent activity                                         │
-│                ▀▀███████████▀▀         │ Explain acme-api · 2m ago                               │
-│                       ███▀             │ /resume for more                                        │
-│                                        │                                                         │
+│          ▀█▄   ▄████████████▀███       │ /mode switches agent mode (PTC, minimal…)               │
+│            ▀███████████████████▀       │ ────────────────────────────────────────                │
+│                ▀▀███████████▀▀         │ Recent activity                                         │
+│                       ███▀             │ Explain acme-api · 2m ago                               │
+│                                        │ /resume for more                                        │
 │           deepseek-v4-flash            │                                                         │
 │          /workspace/acme-api           │                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯"

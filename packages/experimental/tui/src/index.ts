@@ -144,6 +144,7 @@ export function apply(ctx: Context): void {
       continue: startup.continue,
       model: startup.model,
       permission: startup.permission,
+      mode: startup.mode,
       prompt: startup.prompt,
       logs,
       theme,
